@@ -21,6 +21,53 @@ using namespace std;
 
 namespace geometry_calibration
 {
+    bool hasValidGeometry(const DartboardCalibration &calibration)
+    {
+        return calibration.camera_index >= 0 &&
+               calibration.ellipses.hasValidDoubles &&
+               calibration.wires.isValid;
+    }
+
+    bool hasCompleteRingGeometry(const DartboardCalibration &calibration)
+    {
+        return hasValidGeometry(calibration) &&
+               calibration.ellipses.hasValidTriples &&
+               calibration.ellipses.hasValidBulls;
+    }
+
+    bool hasValidOrientation(const DartboardCalibration &calibration)
+    {
+        const auto &orientation = calibration.orientation;
+        const int wire_count = static_cast<int>(calibration.wires.wireEndpoints.size());
+
+        return orientation.cameraPosition != orientation_processing::CameraPosition::UNKNOWN &&
+               orientation.southWireIndex >= 0 && orientation.southWireIndex < wire_count &&
+               orientation.wedge20WireIndex >= 0 && orientation.wedge20WireIndex < wire_count &&
+               orientation.wedgeNumber > 0;
+    }
+
+    CalibrationStatus getCalibrationStatus(const DartboardCalibration &calibration)
+    {
+        if (!hasValidGeometry(calibration))
+            return CalibrationStatus::INVALID;
+        if (!hasCompleteRingGeometry(calibration) || !hasValidOrientation(calibration))
+            return CalibrationStatus::DEGRADED;
+        return CalibrationStatus::READY;
+    }
+
+    const char *calibrationStatusToString(CalibrationStatus status)
+    {
+        switch (status)
+        {
+        case CalibrationStatus::READY:
+            return "READY";
+        case CalibrationStatus::DEGRADED:
+            return "DEGRADED";
+        default:
+            return "INVALID";
+        }
+    }
+
     // This function orchestrates the entire calibration pipeline for one camera
     DartboardCalibration calibrateSingleCamera(const Mat &frame, int cameraIdx, bool debugMode)
     {
@@ -77,15 +124,22 @@ namespace geometry_calibration
         wire_processing::WireData wireData = wire_processing::processWires(orginalFrame, redGreenFrame, calibration, debugMode, wireConfig);
         calibration.wires = wireData;
 
-        //[===STEP 8.5:===] PERSPECTIVE CORRECTION - Apply perspective correction to the mask
-        perspective_processing::DartboardSpec perspectiveSpec;
-        Mat rectifiedImage = perspective_processing::processPerspective(orginalFrame, calibration, debugMode, perspectiveSpec);
+        if (calibration.wires.isValid)
+        {
+            //[===STEP 8.5:===] PERSPECTIVE CORRECTION - Apply perspective correction to the mask
+            perspective_processing::DartboardSpec perspectiveSpec;
+            Mat rectifiedImage = perspective_processing::processPerspective(orginalFrame, calibration, debugMode, perspectiveSpec);
 
-        // [===STEP 9:===] ORIENTATION DETECTION - Find where "20" segment is located
-        // Use rectified image instead of original for better OCR
-        orientation_processing::OrientationParams orientationParams;
-        orientation_processing::OrientationData orientationData = orientation_processing::processOrientation(orginalFrame, redGreenFrame, calibration, debugMode, orientationParams);
-        calibration.orientation = orientationData;
+            // [===STEP 9:===] ORIENTATION DETECTION - Find where "20" segment is located
+            orientation_processing::OrientationParams orientationParams;
+            orientation_processing::OrientationData orientationData = orientation_processing::processOrientation(orginalFrame, redGreenFrame, calibration, debugMode, orientationParams);
+            calibration.orientation = orientationData;
+        }
+        else
+        {
+            log_warning("Skipping perspective and orientation processing for camera " + to_string(cameraIdx) +
+                        " because wire detection is invalid");
+        }
 
         return calibration;
     }
@@ -115,6 +169,38 @@ namespace geometry_calibration
             //  Just call the static function
             DartboardCalibration calibration = calibrateSingleCamera(frames[cam_idx], cam_idx, debugMode);
             calibrations.push_back(calibration);
+
+            const CalibrationStatus status = getCalibrationStatus(calibration);
+            const bool geometry_valid = hasValidGeometry(calibration);
+            const bool orientation_valid = hasValidOrientation(calibration);
+            const string status_details =
+                "CALIBRATION_STATUS camera=" + to_string(cam_idx) +
+                " status=" + calibrationStatusToString(status) +
+                " geometry=" + (geometry_valid ? "valid" : "invalid") +
+                " orientation=" + (orientation_valid ? "valid" : "invalid") +
+                " camera_position=" + orientation_processing::cameraPositionToString(calibration.orientation.cameraPosition) +
+                " wedge20_wire=" + to_string(calibration.orientation.wedge20WireIndex) +
+                " south_wire=" + to_string(calibration.orientation.southWireIndex) +
+                " wires_valid=" + (calibration.wires.isValid ? "true" : "false") +
+                " doubles_valid=" + (calibration.ellipses.hasValidDoubles ? "true" : "false") +
+                " triples_valid=" + (calibration.ellipses.hasValidTriples ? "true" : "false") +
+                " bulls_valid=" + (calibration.ellipses.hasValidBulls ? "true" : "false");
+
+            if (debugMode)
+                log_debug(status_details);
+
+            if (status == CalibrationStatus::DEGRADED)
+            {
+                string reasons;
+                if (!hasCompleteRingGeometry(calibration))
+                    reasons = "ring_geometry_incomplete";
+                if (!orientation_valid)
+                    reasons += (reasons.empty() ? "" : ",") + string("orientation_invalid");
+                log_warning("CALIBRATION_DEGRADED camera=" + to_string(cam_idx) + " reason=" + reasons +
+                            (orientation_valid ? "" : "; wedge scores are disabled for this camera"));
+            }
+            else if (status == CalibrationStatus::INVALID)
+                log_error("CALIBRATION_INVALID camera=" + to_string(cam_idx) + " reason=geometry_invalid");
 
             if (debugMode)
             {

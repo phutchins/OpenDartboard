@@ -53,6 +53,9 @@ namespace debug
         std::cout << "  --height <height>    Frame height (default: 720)\n";
         std::cout << "  --fps <fps>          Frames per second (default: 15)\n";
         std::cout << "  --detector <type>    Detector type: geometry, ai, custom (default: geometry)\n";
+        std::cout << "  --motion-spike-threshold <ratio>  Motion ratio that starts an event (default: 0.08)\n";
+        std::cout << "  --motion-low-threshold <ratio>    Motion ratio considered stable (default: 0.001)\n";
+        std::cout << "  --motion-min-cameras <count>      Cameras required for an event (default: 2)\n";
         std::cout << "  --debug, -d          Enable debug mode (saves frames to debug_frames/ directory)\n";
         std::cout << "  --quiet, -q          Quiet mode (only show errors)\n";
         std::cout << "  --version            Show version information\n";

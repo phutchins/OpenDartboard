@@ -12,6 +12,8 @@ struct DetectorResult
     bool dart_detected = false;
     string score = "";
     Point2f position{-1, -1}; // Dart position for overlay/preview
+    Point2f board_position{0, 0}; // Normalized dartboard position (outer double ring ~= unit ellipse)
+    bool has_board_position = false;
     float confidence = 0.0f;
     int camera_index = -1;
     uint64_t timestamp = 0;

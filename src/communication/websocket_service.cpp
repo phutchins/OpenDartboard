@@ -567,6 +567,13 @@ string WebSocketService::formatScoreJson(const DetectorResult &result)
     j["position"] = {
         {"x", (int)result.position.x},
         {"y", (int)result.position.y}};
+    if (result.has_board_position)
+    {
+        j["board_position"] = {
+            {"x", result.board_position.x},
+            {"y", result.board_position.y},
+            {"coordinate_system", "normalized_board_v1"}};
+    }
     j["confidence"] = result.confidence;
     j["camera"] = result.camera_index;
     j["processing_time"] = result.processing_time_ms;

@@ -34,7 +34,8 @@ private:
     }
 
     // Dynamic loading for custom detectors
-    static std::unique_ptr<DetectorInterface> loadCustomDetector(const std::string &name, bool debug_mode, int target_width, int target_height, int target_fps)
+    static std::unique_ptr<DetectorInterface> loadCustomDetector(const std::string &name, bool debug_mode, int target_width, int target_height, int target_fps,
+                                                                 const motion_processing::MotionParams &motion_params)
     {
         log_info("Attempting to load custom detector: " + name);
 
@@ -63,7 +64,7 @@ private:
                     log_error("  3. " + simpleLibPath);
                     log_error("Last error: " + error);
                     log_warning("Falling back to geometry detector");
-                    return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps);
+                    return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps, motion_params);
                 }
             }
         }
@@ -77,7 +78,7 @@ private:
             log_error("Cannot find 'create_detector' function in plugin");
             log_warning("Falling back to geometry detector");
             dlclose(handle);
-            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps);
+            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps, motion_params);
         }
 
         log_info("Successfully loaded custom detector: " + name);
@@ -86,7 +87,8 @@ private:
     }
 
 public:
-    static std::unique_ptr<DetectorInterface> createDetector(const std::string &detector_type, bool debug_mode, int target_width, int target_height, int target_fps)
+    static std::unique_ptr<DetectorInterface> createDetector(const std::string &detector_type, bool debug_mode, int target_width, int target_height, int target_fps,
+                                                             const motion_processing::MotionParams &motion_params = motion_processing::MotionParams())
     {
         log_debug("Creating detector: " + detector_type);
 
@@ -94,20 +96,20 @@ public:
         {
         case DetectorType::GEOMETRY:
             log_info("Loading geometry-based dart detector");
-            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps);
+            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps, motion_params);
 
         case DetectorType::AI:
             log_info("Loading AI-based dart detector");
             log_warning("AI detection not yet implemented, using geometry detector");
-            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps);
+            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps, motion_params);
 
         case DetectorType::CUSTOM:
             // Try to load as a custom detector plugin
-            return loadCustomDetector(detector_type, debug_mode, target_width, target_height, target_fps);
+            return loadCustomDetector(detector_type, debug_mode, target_width, target_height, target_fps, motion_params);
 
         default:
             log_error("Unknown detector type: " + detector_type + ", using geometry detector");
-            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps);
+            return std::make_unique<GeometryDetector>(debug_mode, target_width, target_height, target_fps, motion_params);
         }
     }
 };

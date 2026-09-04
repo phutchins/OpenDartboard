@@ -13,7 +13,8 @@
 using namespace std;
 using namespace cv;
 
-Scorer::Scorer(const string &model, int w, int h, int fps, const vector<string> &cams, bool debug_mode, const string &detector_type)
+Scorer::Scorer(const string &model, int w, int h, int fps, const vector<string> &cams, bool debug_mode, const string &detector_type,
+               const motion_processing::MotionParams &motion_params)
     : model_path(model), width(w), height(h), fps(fps), camera_sources(cams), debug_display(debug_mode), detector_type_name(detector_type)
 {
     // Initialize score queue and WebSocket service
@@ -28,7 +29,7 @@ Scorer::Scorer(const string &model, int w, int h, int fps, const vector<string> 
     }
 
     // Create detector
-    detector = DetectorFactory::createDetector(detector_type_name, debug_display, width, height, fps);
+    detector = DetectorFactory::createDetector(detector_type_name, debug_display, width, height, fps, motion_params);
 
     // Initialize detector
     if (!detector->initialize(cameras))
@@ -37,7 +38,7 @@ Scorer::Scorer(const string &model, int w, int h, int fps, const vector<string> 
     }
     else
     {
-        log_info("Detector initialized successfully");
+        log_info("Detector initialized");
     }
 }
 

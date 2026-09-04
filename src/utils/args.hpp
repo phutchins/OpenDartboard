@@ -40,6 +40,17 @@ int getArg(int argc, char **argv, const std::string &flag, int defaultValue)
     return std::stoi(value);
 }
 
+// Get a floating-point argument from command line
+double getArg(int argc, char **argv, const std::string &flag, double defaultValue)
+{
+    std::string value = getArg(argc, argv, flag, "");
+    if (value.empty())
+    {
+        return defaultValue;
+    }
+    return std::stod(value);
+}
+
 // Split a comma-separated string into a vector of strings
 std::vector<std::string> splitString(const std::string &str, char delimiter = ',')
 {

@@ -30,9 +30,24 @@ struct DartboardCalibration
     orientation_processing::OrientationData orientation; // Where is the "20" segment?
 };
 
+enum class CalibrationStatus
+{
+    INVALID,
+    DEGRADED,
+    READY
+};
+
 // NAMESPACE WITH UTILITY FUNCTIONS
 namespace geometry_calibration
 {
+    // A calibration can retain usable ring geometry while lacking the board
+    // orientation required to assign a reliable wedge number.
+    bool hasValidGeometry(const DartboardCalibration &calibration);
+    bool hasCompleteRingGeometry(const DartboardCalibration &calibration);
+    bool hasValidOrientation(const DartboardCalibration &calibration);
+    CalibrationStatus getCalibrationStatus(const DartboardCalibration &calibration);
+    const char *calibrationStatusToString(CalibrationStatus status);
+
     // Calibrate multiple cameras at once
     vector<DartboardCalibration> calibrateMultipleCameras(const vector<Mat> &frames, bool debugMode = false, int targetWidth = 640, int targetHeight = 480);
 }

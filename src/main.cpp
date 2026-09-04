@@ -4,11 +4,13 @@
 #include "utils/signals.hpp"
 #include "utils/logging.hpp"
 #include "utils/autocam.hpp"
+#include "detector/geometry/detection/motion_processing.hpp"
 #include <iostream>
 #include <vector>
 #include <string>
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 using namespace std;
 
@@ -31,6 +33,19 @@ int main(int argc, char **argv)
   int fps = getArg(argc, argv, "--fps", 15);
   bool debug_mode = hasFlag(argc, argv, "--debug") || hasFlag(argc, argv, "-d");
   bool quite_mode = hasFlag(argc, argv, "--quiet") || hasFlag(argc, argv, "-q");
+
+  motion_processing::MotionParams motion_params;
+  motion_params.spike_threshold = getArg(argc, argv, "--motion-spike-threshold", motion_params.spike_threshold);
+  motion_params.low_threshold = getArg(argc, argv, "--motion-low-threshold", motion_params.low_threshold);
+  motion_params.min_cameras_for_event = getArg(argc, argv, "--motion-min-cameras", motion_params.min_cameras_for_event);
+
+  if (!std::isfinite(motion_params.spike_threshold) || motion_params.spike_threshold <= 0.0 || motion_params.spike_threshold > 1.0 ||
+      !std::isfinite(motion_params.low_threshold) || motion_params.low_threshold < 0.0 || motion_params.low_threshold >= motion_params.spike_threshold ||
+      motion_params.min_cameras_for_event < 1)
+  {
+    cerr << "Invalid motion configuration: require 0 <= low threshold < spike threshold <= 1 and at least one camera" << endl;
+    return 2;
+  }
 
   // Replace boolean flag with detector type string
   string detector_type = getArg(argc, argv, "--detector", "geometry");
@@ -63,8 +78,19 @@ int main(int argc, char **argv)
 
   debug::printConfig(width, height, fps, model_path, cams);
 
+  if (motion_params.min_cameras_for_event > static_cast<int>(cams.size()))
+  {
+    cerr << "Invalid motion configuration: --motion-min-cameras (" << motion_params.min_cameras_for_event
+         << ") exceeds configured camera count (" << cams.size() << ")" << endl;
+    return 2;
+  }
+
+  log_info("MOTION_CONFIG spike_threshold=" + to_string(motion_params.spike_threshold) +
+           " low_threshold=" + to_string(motion_params.low_threshold) +
+           " min_cameras=" + to_string(motion_params.min_cameras_for_event));
+
   // Initialise the scorer with debug mode if requested
-  Scorer scorer(model_path, width, height, fps, cams, debug_mode, detector_type);
+  Scorer scorer(model_path, width, height, fps, cams, debug_mode, detector_type, motion_params);
 
   // Register signal handlers with a lambda to stop the scorer
   signals::setupSignalHandlers([&scorer]()

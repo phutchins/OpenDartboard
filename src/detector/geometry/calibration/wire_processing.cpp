@@ -1,4 +1,5 @@
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <iostream>
 
 #include "wire_processing.hpp"
@@ -635,15 +636,25 @@ namespace wire_processing
         log_debug("Using ENSEMBLE detection method (Contour + Hough + Scoring)");
         colorWires = findWiresByEnsemble(frame, colorMask, calib, enableDebug, config);
 
-        // Set up result, take only the first 20 wires
-        for (int i = 0; i < 20; i++)
-        {
-            result.wireEndpoints[i] = colorWires[i];
-        }
-        result.isValid = (result.wireEndpoints.size() == 20); // Allow some tolerance
+        const size_t expected_wire_count = result.wireEndpoints.size();
+        result.isValid = colorWires.size() == expected_wire_count;
 
-        log_debug("Found " + log_string(result.wireEndpoints.size()) + " wire boundaries using ensemble");
-        log_debug("Wire detection completed successfully");
+        if (colorWires.size() < expected_wire_count)
+        {
+            log_error("WIRE_DETECTION_STATUS camera=" + to_string(calib.camera_index) +
+                      " status=INVALID detected=" + to_string(colorWires.size()) +
+                      " expected=" + to_string(expected_wire_count));
+            return result;
+        }
+
+        // Preserve the existing fixed-size representation while refusing to
+        // call over- or under-detection a valid calibration.
+        copy_n(colorWires.begin(), expected_wire_count, result.wireEndpoints.begin());
+
+        log_debug("WIRE_DETECTION_STATUS camera=" + to_string(calib.camera_index) +
+                  " status=" + (result.isValid ? "VALID" : "INVALID") +
+                  " detected=" + to_string(colorWires.size()) +
+                  " expected=" + to_string(expected_wire_count));
 
         // Handle debug output internally
         if (enableDebug)

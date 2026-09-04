@@ -11,8 +11,9 @@ using namespace cv;
 using namespace std;
 
 // Constructor
-GeometryDetector::GeometryDetector(bool debug_mode, int target_width, int target_height, int target_fps)
-    : initialized(false), calibrated(false), debug_mode(debug_mode), target_width(target_width), target_height(target_height), target_fps(target_fps)
+GeometryDetector::GeometryDetector(bool debug_mode, int target_width, int target_height, int target_fps,
+                                   const motion_processing::MotionParams &motion_params)
+    : initialized(false), calibrated(false), debug_mode(debug_mode), target_width(target_width), target_height(target_height), target_fps(target_fps), motion_params(motion_params)
 {
 }
 
@@ -35,7 +36,7 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
     }
 
     // Process motion session - all motion logic is now handled in motion_processing
-    motion_processing::MotionResult motion_result = motion_processing::processMotion(frames, background_frames, debug_mode);
+    motion_processing::MotionResult motion_result = motion_processing::processMotion(frames, background_frames, debug_mode, motion_params);
 
     // Process dart state detection
     dart_processing::DartStateResult dart_result = dart_processing::processDartState(frames, background_frames, motion_result.motion_finished, debug_mode);
@@ -49,6 +50,8 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
         result.dart_detected = true;
         result.score = score_result.score;
         result.position = score_result.pixel_position;
+        result.board_position = score_result.dartboard_position;
+        result.has_board_position = score_result.has_dartboard_position;
         result.confidence = score_result.confidence;
         result.camera_index = score_result.camera_index;
     }
@@ -95,7 +98,26 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
             target_width,
             target_height);
 
-        calibrated = !calibrations.empty();
+        int ready_calibrations = 0;
+        int degraded_calibrations = 0;
+        int invalid_calibrations = 0;
+        for (const auto &calibration : calibrations)
+        {
+            switch (geometry_calibration::getCalibrationStatus(calibration))
+            {
+            case CalibrationStatus::READY:
+                ready_calibrations++;
+                break;
+            case CalibrationStatus::DEGRADED:
+                degraded_calibrations++;
+                break;
+            case CalibrationStatus::INVALID:
+                invalid_calibrations++;
+                break;
+            }
+        }
+
+        calibrated = (ready_calibrations + degraded_calibrations) > 0;
 
         if (calibrated)
         {
@@ -104,7 +126,18 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
             for (const auto &frame : initial_frames)
                 background_frames.push_back(frame.clone());
 
-            log_info("Initial calibration completed successfully");
+            if (ready_calibrations == static_cast<int>(calibrations.size()))
+            {
+                log_info("CALIBRATION_SUMMARY status=READY ready=" + to_string(ready_calibrations) +
+                         " degraded=0 invalid=0");
+            }
+            else
+            {
+                log_warning("CALIBRATION_SUMMARY status=DEGRADED ready=" + to_string(ready_calibrations) +
+                            " degraded=" + to_string(degraded_calibrations) +
+                            " invalid=" + to_string(invalid_calibrations) +
+                            "; geometric detection may continue but reliable wedge scoring requires READY orientation");
+            }
 
             // Save calibration for future use
             if (cache::geometry::save(calibrations))
@@ -123,7 +156,7 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
         }
         else
         {
-            log_error("Initial calibration failed");
+            log_error("CALIBRATION_SUMMARY status=FAILED ready=0 degraded=0 invalid=" + to_string(invalid_calibrations));
             initialized = false;
             calibrated = false;
         }

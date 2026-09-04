@@ -18,6 +18,11 @@ The **main feature** - connects and receives live dart scores as JSON messages i
 {
   "score": "D20",
   "position": { "x": 150, "y": 200 },
+  "board_position": {
+    "x": -0.12,
+    "y": -0.93,
+    "coordinate_system": "normalized_board_v1"
+  },
   "confidence": 0.95,
   "camera": 0,
   "processing_time": 15,
@@ -32,10 +37,16 @@ The **main feature** - connects and receives live dart scores as JSON messages i
 | `score`           | `string`  | `"S1"-"D20"`, `"BULL"`, `"OUTER"`, `"MISS"`, `"END"` | Dart score value        |
 | `position.x`      | `integer` | `0-XXX`                                              | X coordinate in pixels  |
 | `position.y`      | `integer` | `0-XXX`                                              | Y coordinate in pixels  |
+| `board_position`  | `object`  | Usually `-1.0` to `1.0` per axis                     | Optional board-centered normalized coordinates; omitted when unavailable |
+| `board_position.x`| `float`   | Usually `-1.0` to `1.0`                              | Horizontal coordinate (`+x` right); outer double ellipse is approximately unit radius |
+| `board_position.y`| `float`   | Usually `-1.0` to `1.0`                              | Vertical coordinate (`+y` down); the center of wedge 20 points up |
+| `board_position.coordinate_system` | `string` | `"normalized_board_v1"`                  | Identifies the normalization contract |
 | `confidence`      | `float`   | `0.0-1.0`                                            | Detection confidence    |
 | `camera`          | `integer` | `0-2`                                                | Camera index            |
 | `processing_time` | `integer` | `1-1000`                                             | Processing time in ms   |
 | `timestamp`       | `integer` | Unix timestamp                                       | Message timestamp in ms |
+
+`position` remains the source-camera pixel coordinate for backward compatibility. `board_position` is additive and optional, so existing clients can continue to use the original fields unchanged. It is normalized independently on each camera from the detected bull center, outer double ellipse, and detected wedge-20 orientation. It is omitted when those inputs are invalid.
 
 ## Simple Client Example
 

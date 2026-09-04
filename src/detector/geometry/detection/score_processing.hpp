@@ -14,12 +14,20 @@ namespace score_processing
     {
         string score = "MISS";                        // Dart score (S20, D5, T17, BULL, etc.)
         Point2f dartboard_position = Point2f(-1, -1); // Position on dartboard coordinate system
+        bool has_dartboard_position = false;          // Whether normalized board coordinates are available
         Point2f pixel_position = Point2f(-1, -1);     // Original pixel position
         Point2f center_position = Point2f(-1, -1);    // Dart center position
         float confidence = 0.0f;                      // Scoring confidence
         int camera_index = -1;                        // Which camera detected this
         bool valid = false;                           // Is this a valid score result
     };
+
+    // Convert a camera pixel to a canonical board-centered coordinate system.
+    // The outer double ellipse is approximately unit radius and wedge 20 is up.
+    bool normalizeDartboardPosition(
+        const Point2f &pixel,
+        const DartboardCalibration &calibration,
+        Point2f &normalized_position);
 
     // Process dart scoring from tip detection results
     ScoreResult processScore(

@@ -152,9 +152,13 @@ namespace dartboard_visualization
         // ===== CALIBRATION STATUS & INFO =====
         if (showDetails)
         {
-            // Status banner - GREEN for success
-            cv::putText(visFrame, "CALIBRATION SUCCESS", cv::Point(20, 40),
-                        cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 3);
+            const CalibrationStatus status = geometry_calibration::getCalibrationStatus(calib);
+            const std::string statusText = "CALIBRATION " + std::string(geometry_calibration::calibrationStatusToString(status));
+            const cv::Scalar statusColor = status == CalibrationStatus::READY
+                                               ? cv::Scalar(0, 255, 0)
+                                               : (status == CalibrationStatus::DEGRADED ? cv::Scalar(0, 255, 255) : cv::Scalar(0, 0, 255));
+            cv::putText(visFrame, statusText, cv::Point(20, 40),
+                        cv::FONT_HERSHEY_SIMPLEX, 1.0, statusColor, 3);
 
             // Camera info
             cv::putText(visFrame, "Camera " + std::to_string(calib.camera_index), cv::Point(20, 70),
@@ -165,10 +169,19 @@ namespace dartboard_visualization
                         cv::Point(20, 100), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2);
 
             // Wire detection info
-            std::string wireInfo = "Wires: " + std::to_string(calib.wires.wireEndpoints.size()) + "/??";
+            std::string wireInfo = std::string("Wires: ") + (calib.wires.isValid ? "VALID (20)" : "INVALID");
             cv::Scalar wireColor = calib.wires.isValid ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
             cv::putText(visFrame, wireInfo, cv::Point(20, 130),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, wireColor, 2);
+
+            const std::string orientationInfo =
+                "Orientation: " + std::string(geometry_calibration::hasValidOrientation(calib) ? "VALID" : "INVALID") +
+                " (W20: " + std::to_string(calib.orientation.wedge20WireIndex) + ")";
+            const cv::Scalar orientationColor = geometry_calibration::hasValidOrientation(calib)
+                                                    ? cv::Scalar(0, 255, 0)
+                                                    : cv::Scalar(0, 255, 255);
+            cv::putText(visFrame, orientationInfo, cv::Point(20, 160),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, orientationColor, 2);
 
             // Perspective info
             if (calib.ellipses.offsetMagnitude > 5)
@@ -189,7 +202,7 @@ namespace dartboard_visualization
                     }
                 }
 
-                cv::putText(visFrame, offsetInfo, cv::Point(20, 160),
+                cv::putText(visFrame, offsetInfo, cv::Point(20, 190),
                             cv::FONT_HERSHEY_SIMPLEX, 0.6, offsetColor, 2);
             }
 

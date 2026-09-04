@@ -4,6 +4,7 @@
 #include <atomic>
 #include <opencv2/opencv.hpp>
 #include "detector/detector_interface.hpp"
+#include "detector/geometry/detection/motion_processing.hpp"
 #include "../communication/websocket_service.hpp"
 #include "../communication/score_queue.hpp"
 #include <memory>
@@ -15,7 +16,8 @@ class Scorer
 public:
   Scorer(const std::string &model, int width, int height, int fps,
          const std::vector<std::string> &cams, bool debug_mode = false,
-         const std::string &detector_type = "geometry");
+         const std::string &detector_type = "geometry",
+         const motion_processing::MotionParams &motion_params = motion_processing::MotionParams());
   ~Scorer();
 
   void run();

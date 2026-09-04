@@ -13,7 +13,8 @@ using namespace std;
 class GeometryDetector : public DetectorInterface
 {
 public:
-    GeometryDetector(bool debug_mode, int target_width, int target_height, int target_fps);
+    GeometryDetector(bool debug_mode, int target_width, int target_height, int target_fps,
+                     const motion_processing::MotionParams &motion_params = motion_processing::MotionParams());
     virtual ~GeometryDetector() = default;
 
     virtual bool initialize(vector<VideoCapture> &cameras) override;
@@ -29,6 +30,7 @@ protected:
     int target_width;
     int target_height;
     int target_fps;
+    motion_processing::MotionParams motion_params;
     vector<DartboardCalibration> calibrations;
     vector<Mat> background_frames;
 

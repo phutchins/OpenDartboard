@@ -65,6 +65,17 @@ sudo apt install -y ./opendartboard_0.1.3-1_arm64.deb
 opendartboard --autocams
 ```
 
+Motion event defaults can be tuned per installation without rebuilding:
+
+```shell
+opendartboard --autocams \
+  --motion-spike-threshold 0.08 \
+  --motion-low-threshold 0.001 \
+  --motion-min-cameras 2
+```
+
+Ratios are fractions of changed pixels from `0.0` to `1.0`. Run with `--debug` to log event-level per-camera motion peaks when tuning these values.
+
 > **Tip**: Need a quick debug dashboard? Run [`debug.opendartboard.org`](http://debug.opendartboard.org) in any modern browser to see the score output, camera feeds, calibrations images, and more.
 
 ## Clients

@@ -1,6 +1,9 @@
 #include "motion_processing.hpp"
 #include "utils.hpp"
 #include "utils/streamer.hpp"
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 using namespace cv;
 using namespace std;
@@ -19,8 +22,37 @@ namespace motion_processing
     static chrono::steady_clock::time_point event_start_time;
     static chrono::steady_clock::time_point cooldown_start_time;
     static vector<bool> cameras_spiked;
+    static vector<double> peak_motion_ratios;
     static vector<double> intensity_history;
     static int stable_frame_count = 0;
+
+    static string formatCameraRatios(const vector<MotionData> &motion_data)
+    {
+        ostringstream output;
+        output << fixed << setprecision(6) << "[";
+        for (size_t i = 0; i < motion_data.size(); i++)
+        {
+            if (i > 0)
+                output << ",";
+            output << "cam" << i << "=" << motion_data[i].motion_ratio;
+        }
+        output << "]";
+        return output.str();
+    }
+
+    static string formatPeakRatios()
+    {
+        ostringstream output;
+        output << fixed << setprecision(6) << "[";
+        for (size_t i = 0; i < peak_motion_ratios.size(); i++)
+        {
+            if (i > 0)
+                output << ",";
+            output << "cam" << i << "=" << peak_motion_ratios[i];
+        }
+        output << "]";
+        return output.str();
+    }
 
     vector<MotionData> detectMotion(const vector<Mat> &current_frames, const vector<Mat> &background_frames, bool debug_mode, const MotionParams &params)
     {
@@ -137,6 +169,9 @@ namespace motion_processing
         vector<MotionData> motion_data = detectMotion(current_frames, background_frames, debug_mode, params);
         auto now = chrono::steady_clock::now();
 
+        if (motion_data.empty())
+            return result;
+
         // Calculate overall motion intensity (average across all cameras)
         double total_intensity = 0.0;
         int cameras_with_motion = 0;
@@ -154,6 +189,13 @@ namespace motion_processing
         if (cameras_spiked.size() != motion_data.size())
         {
             cameras_spiked.resize(motion_data.size(), false);
+            peak_motion_ratios.resize(motion_data.size(), 0.0);
+        }
+
+        if (current_state != DartEventState::IDLE)
+        {
+            for (size_t i = 0; i < motion_data.size(); i++)
+                peak_motion_ratios[i] = max(peak_motion_ratios[i], motion_data[i].motion_ratio);
         }
 
         // Calculate detection duration if we're in an active state
@@ -173,6 +215,8 @@ namespace motion_processing
                 current_state = DartEventState::SPIKE_DETECTED;
                 event_start_time = now;
                 fill(cameras_spiked.begin(), cameras_spiked.end(), false);
+                for (size_t i = 0; i < motion_data.size(); i++)
+                    peak_motion_ratios[i] = motion_data[i].motion_ratio;
                 intensity_history.clear();
                 stable_frame_count = 0;
 
@@ -183,6 +227,13 @@ namespace motion_processing
                     {
                         cameras_spiked[i] = true;
                     }
+                }
+
+                if (debug_mode)
+                {
+                    log_debug("MOTION_EVENT_START average=" + to_string(current_intensity) +
+                              " ratios=" + formatCameraRatios(motion_data) +
+                              " spike_threshold=" + to_string(params.spike_threshold));
                 }
             }
             break;
@@ -208,6 +259,13 @@ namespace motion_processing
             {
                 current_state = DartEventState::STABILIZING;
                 stable_frame_count = 1;
+                if (debug_mode)
+                {
+                    log_debug("MOTION_EVENT_STABILIZING cameras=" + to_string(cameras_that_spiked) +
+                              "/" + to_string(params.min_cameras_for_event) +
+                              " average=" + to_string(current_intensity) +
+                              " peaks=" + formatPeakRatios());
+                }
             }
             // Timeout if event takes too long or insufficient participation
             else if (event_duration > params.max_event_duration_ms ||
@@ -215,6 +273,13 @@ namespace motion_processing
             {
                 current_state = DartEventState::IDLE;
                 log_warning("DART EVENT: Event timeout or insufficient cameras (" + to_string(cameras_that_spiked) + "/" + to_string(params.min_cameras_for_event) + ") after " + to_string(event_duration) + "ms");
+                if (debug_mode)
+                {
+                    log_debug("MOTION_EVENT_REJECTED reason=timeout_or_insufficient_cameras cameras=" +
+                              to_string(cameras_that_spiked) + "/" + to_string(params.min_cameras_for_event) +
+                              " average=" + to_string(current_intensity) +
+                              " peaks=" + formatPeakRatios());
+                }
             }
             break;
         }
@@ -231,6 +296,13 @@ namespace motion_processing
                     current_state = DartEventState::END;
                     result.motion_finished = true;
                     int cameras_that_spiked = count(cameras_spiked.begin(), cameras_spiked.end(), true);
+                    if (debug_mode)
+                    {
+                        log_debug("MOTION_EVENT_CONFIRMED cameras=" + to_string(cameras_that_spiked) +
+                                  "/" + to_string(params.min_cameras_for_event) +
+                                  " duration_ms=" + to_string(result.detection_duration_ms) +
+                                  " peaks=" + formatPeakRatios());
+                    }
                 }
             }
             else
@@ -240,6 +312,11 @@ namespace motion_processing
                 {
                     // Big spike during stabilization - probably dart removal, reset
                     current_state = DartEventState::IDLE;
+                    if (debug_mode)
+                    {
+                        log_debug("MOTION_EVENT_REJECTED reason=motion_during_stabilization average=" +
+                                  to_string(current_intensity) + " peaks=" + formatPeakRatios());
+                    }
                 }
                 else
                 {

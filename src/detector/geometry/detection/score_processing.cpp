@@ -2,6 +2,8 @@
 #include "utils.hpp"
 #include "utils/streamer.hpp"
 #include "../calibration/geometry_calibration.hpp"
+#include <algorithm>
+#include <cmath>
 
 using namespace cv;
 using namespace std;
@@ -11,6 +13,58 @@ namespace score_processing
 
     static bool initialized = false;
     static unique_ptr<streamer> point_on_screen_streamer;
+
+    bool normalizeDartboardPosition(
+        const Point2f &pixel,
+        const DartboardCalibration &calib,
+        Point2f &normalized_position)
+    {
+        if (!geometry_calibration::hasValidGeometry(calib) || !geometry_calibration::hasValidOrientation(calib))
+            return false;
+
+        const RotatedRect &outer_double = calib.ellipses.outerDoubleEllipse;
+        const float radius_x = outer_double.size.width / 2.0f;
+        const float radius_y = outer_double.size.height / 2.0f;
+        if (radius_x <= 0.0f || radius_y <= 0.0f)
+            return false;
+
+        const float angle = -outer_double.angle * static_cast<float>(CV_PI) / 180.0f;
+        const float cos_angle = cos(angle);
+        const float sin_angle = sin(angle);
+
+        const auto normalize_vector = [&](const Point2f &point) {
+            const Point2f relative = point - Point2f(calib.bullCenter);
+            const Point2f rotated(
+                relative.x * cos_angle - relative.y * sin_angle,
+                relative.x * sin_angle + relative.y * cos_angle);
+            return Point2f(rotated.x / radius_x, rotated.y / radius_y);
+        };
+
+        const int wedge20_wire = calib.orientation.wedge20WireIndex;
+        const int next_wire = (wedge20_wire + 1) % static_cast<int>(calib.wires.wireEndpoints.size());
+        Point2f boundary1 = normalize_vector(calib.wires.wireEndpoints[wedge20_wire]);
+        Point2f boundary2 = normalize_vector(calib.wires.wireEndpoints[next_wire]);
+        const float boundary1_length = norm(boundary1);
+        const float boundary2_length = norm(boundary2);
+        if (boundary1_length <= 0.0f || boundary2_length <= 0.0f)
+            return false;
+
+        boundary1 /= boundary1_length;
+        boundary2 /= boundary2_length;
+        const Point2f wedge20_center = boundary1 + boundary2;
+        if (norm(wedge20_center) <= 0.0f)
+            return false;
+
+        const float wedge20_angle = atan2(wedge20_center.y, wedge20_center.x);
+        const float canonical_rotation = -static_cast<float>(CV_PI) / 2.0f - wedge20_angle;
+        const float canonical_cos = cos(canonical_rotation);
+        const float canonical_sin = sin(canonical_rotation);
+        const Point2f camera_normalized = normalize_vector(pixel);
+        normalized_position = Point2f(
+            camera_normalized.x * canonical_cos - camera_normalized.y * canonical_sin,
+            camera_normalized.x * canonical_sin + camera_normalized.y * canonical_cos);
+        return std::isfinite(normalized_position.x) && std::isfinite(normalized_position.y);
+    }
 
     // Helper: Check if point is inside ellipse (pure math)
     bool isPointInEllipse(Point2f point, const RotatedRect &ellipse)
@@ -38,7 +92,7 @@ namespace score_processing
     string getScoreAtPoint(Point2f pixel, const DartboardCalibration &calib)
     {
         // Validation check
-        if (!calib.ellipses.hasValidDoubles || calib.wires.wireEndpoints.size() < 20)
+        if (!geometry_calibration::hasValidGeometry(calib))
         {
             log_debug("SCORE: Invalid calibration data");
             return "MISS";
@@ -95,10 +149,10 @@ namespace score_processing
         }
 
         // 2. WEDGE DETECTION using angles
-        if (!calib.orientation.isStarCamera || calib.orientation.wedge20WireIndex < 0)
+        if (!geometry_calibration::hasValidOrientation(calib))
         {
-            log_debug("SCORE: No orientation data, defaulting to 20");
-            return ring_prefix + "20";
+            log_debug("SCORE: Invalid orientation data; refusing to guess a wedge");
+            return "MISS";
         }
 
         // Calculate angle from center to point
@@ -192,7 +246,8 @@ namespace score_processing
             vector<pair<string, int>> camera_scores; // (score, camera_index)
             vector<Mat> points_on_screen;            // For debug images
 
-            for (size_t i = 0; i < dart_result.camera_results.size(); i++)
+            const size_t camera_count = min({dart_result.camera_results.size(), calibrations.size(), background_frames.size()});
+            for (size_t i = 0; i < camera_count; i++)
             {
                 log_debug("-------");
                 string score_test = getScoreAtPoint(dart_result.camera_results[i].tip_position, calibrations[i]);
@@ -275,7 +330,9 @@ namespace score_processing
                 result.score = final_score;
                 result.pixel_position = dart_result.camera_results[best_camera].tip_position;
                 result.center_position = dart_result.camera_results[best_camera].center_position;
-                result.dartboard_position = dart_result.camera_results[best_camera].tip_position; // TODO: Convert to dartboard coordinates
+                result.has_dartboard_position = normalizeDartboardPosition(result.pixel_position, calibrations[best_camera], result.dartboard_position);
+                if (!result.has_dartboard_position)
+                    result.dartboard_position = Point2f(-1, -1);
                 result.confidence = consensus_score.empty() ? 0.7f : 0.9f;
                 result.camera_index = best_camera;
                 result.valid = true;
