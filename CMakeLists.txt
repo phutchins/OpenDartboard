@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.17)
 project(opendartboard LANGUAGES CXX)
 
+include(CTest)
+
 # Add FetchContent module for dependency management
 include(FetchContent)
 
@@ -105,3 +107,17 @@ target_compile_definitions(opendartboard
 )
 
 target_compile_features(opendartboard PRIVATE cxx_std_17)
+
+if(BUILD_TESTING)
+    add_executable(calibration_geometry_test
+        tests/calibration_geometry_test.cpp
+    )
+    target_include_directories(calibration_geometry_test PRIVATE
+        ${OpenCV_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        /usr/include/opencv4
+    )
+    target_link_libraries(calibration_geometry_test PRIVATE ${OpenCV_LIBS})
+    target_compile_features(calibration_geometry_test PRIVATE cxx_std_17)
+    add_test(NAME calibration_geometry_test COMMAND calibration_geometry_test)
+endif()

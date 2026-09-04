@@ -325,6 +325,8 @@ namespace score_processing
                     final_score = camera_scores[0].first;
                     best_camera = camera_scores[0].second;
                     log_info("No consensus, using single camera score: " + final_score + " from camera " + to_string(best_camera));
+                    log_debug("SCORE_CONFIDENCE mode=SINGLE_CAMERA camera=" + to_string(best_camera) +
+                              " confidence=0.7 reason=no_second_ready_camera_agreement");
                 }
 
                 result.score = final_score;

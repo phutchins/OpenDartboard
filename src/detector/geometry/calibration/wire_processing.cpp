@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "wire_processing.hpp"
+#include "board_geometry.hpp"
 #include "geometry_calibration.hpp"
 #include "utils.hpp"
 
@@ -413,50 +414,6 @@ namespace wire_processing
         return wirePoints;
     }
 
-    // Group wires by angular proximity
-    vector<vector<Point2f>> groupWiresByAngle(const vector<Point2f> &wires, Point2f center, float angleTolerance)
-    {
-        vector<vector<Point2f>> groups;
-        vector<bool> used(wires.size(), false);
-
-        for (size_t i = 0; i < wires.size(); i++)
-        {
-            if (used[i])
-                continue;
-
-            vector<Point2f> group;
-            Point2f dir1 = wires[i] - center;
-            float angle1 = atan2(dir1.y, dir1.x) * 180.0f / CV_PI;
-
-            group.push_back(wires[i]);
-            used[i] = true;
-
-            // Find all wires within angular tolerance
-            for (size_t j = i + 1; j < wires.size(); j++)
-            {
-                if (used[j])
-                    continue;
-
-                Point2f dir2 = wires[j] - center;
-                float angle2 = atan2(dir2.y, dir2.x) * 180.0f / CV_PI;
-
-                float angleDiff = abs(angle1 - angle2);
-                if (angleDiff > 180.0f)
-                    angleDiff = 360.0f - angleDiff;
-
-                if (angleDiff <= angleTolerance)
-                {
-                    group.push_back(wires[j]);
-                    used[j] = true;
-                }
-            }
-
-            groups.push_back(group);
-        }
-
-        return groups;
-    }
-
     // Score a wire based on line quality (your brilliant scoring idea!)
     float scoreWire(Point2f wire, Point2f center, const Mat &wireMask)
     {
@@ -503,39 +460,55 @@ namespace wire_processing
     }
 
     // Select average wire position from a group (simpler than scoring!)
-    Point2f selectAverageWireFromGroup(const vector<Point2f> &group, Point2f center)
+    Point2f selectAverageWireFromGroup(const vector<Point2f> &group, const DartboardCalibration &calib)
     {
         if (group.empty())
             return Point2f(0, 0);
         if (group.size() == 1)
             return group[0];
 
-        // Calculate average position
-        Point2f avgPosition(0, 0);
+        // Average directions in perspective-normalized board space. Averaging raw
+        // pixels biases the result toward the compressed axis on oblique cameras.
+        Point2f normalizedDirection(0, 0);
         for (const Point2f &wire : group)
         {
-            avgPosition += wire;
+            Point2f candidate = board_geometry::normalizeVector(
+                wire - Point2f(calib.bullCenter), calib.ellipses.outerDoubleEllipse);
+            const float length = norm(candidate);
+            if (length > 0.0f)
+                normalizedDirection += candidate / length;
         }
-        avgPosition = avgPosition / (float)group.size();
+        if (norm(normalizedDirection) <= 0.0f)
+            return group[0];
+        normalizedDirection /= norm(normalizedDirection);
 
-        // Convert to angle and extend to ellipse boundary for consistency
-        Point2f direction = avgPosition - center;
-        float avgAngle = atan2(direction.y, direction.x);
+        Point2f imageDirection = board_geometry::denormalizeVector(
+            normalizedDirection, calib.ellipses.outerDoubleEllipse);
+        const float avgAngle = atan2(imageDirection.y, imageDirection.x);
 
         log_debug("Average wire from group of " + log_string(group.size()) + " at angle: " +
                   log_string(avgAngle * 180.0f / CV_PI) + "°");
 
-        return avgPosition;
+        return math::intersectRayWithEllipse(
+            Point2f(calib.bullCenter), avgAngle, calib.ellipses.outerDoubleEllipse);
     }
 
     // Ensemble method combining both approaches - AVERAGE VERSION
-    vector<Point2f> findWiresByEnsemble(const Mat &mask, const Mat &colorMask, const DartboardCalibration &calib, bool debug_mode, const WireDetectionConfig &config)
+    vector<Point2f> findWiresByEnsemble(
+        const Mat &mask,
+        const Mat &colorMask,
+        const DartboardCalibration &calib,
+        bool debug_mode,
+        const WireDetectionConfig &config,
+        vector<Point2f> *contourWiresOutput)
     {
         log_debug("STARTING ENSEMBLE WIRE DETECTION (AVERAGE) for camera " + log_string(calib.camera_index));
 
         // Get wires from both methods
         vector<Point2f> contourWires = findWiresByColorTransitions(mask, colorMask, calib, false);
         vector<Point2f> houghWires = findWiresByHoughLines(mask, colorMask, calib, false, config);
+        if (contourWiresOutput != nullptr)
+            *contourWiresOutput = contourWires;
 
         log_debug("Contour method found " + log_string(contourWires.size()) + " wires");
         log_debug("Hough method found " + log_string(houghWires.size()) + " wires");
@@ -546,8 +519,14 @@ namespace wire_processing
 
         log_debug("Combined total: " + log_string(allWires.size()) + " wire candidates");
 
-        // Group wires by angular proximity (±9° tolerance for 18° dartboard segments)
-        vector<vector<Point2f>> wireGroups = groupWiresByAngle(allWires, Point2f(calib.bullCenter), 9.0f);
+        // Group in ellipse-normalized board space. Raw image angles are not
+        // comparable on an oblique camera: adjacent 18-degree sectors can be
+        // compressed to only a few image degrees and were previously merged.
+        vector<vector<Point2f>> wireGroups = board_geometry::groupByNormalizedAngle(
+            allWires,
+            Point2f(calib.bullCenter),
+            calib.ellipses.outerDoubleEllipse,
+            8.0f);
 
         log_debug("Grouped into " + log_string(wireGroups.size()) + " angular groups");
 
@@ -555,19 +534,20 @@ namespace wire_processing
         vector<Point2f> finalWires;
         for (size_t i = 0; i < wireGroups.size(); i++)
         {
-            Point2f avgWire = selectAverageWireFromGroup(wireGroups[i], Point2f(calib.bullCenter));
+            Point2f avgWire = selectAverageWireFromGroup(wireGroups[i], calib);
             finalWires.push_back(avgWire);
 
             log_debug("Group " + log_string(i) + " has " + log_string(wireGroups[i].size()) + " candidates, selected average");
         }
 
-        // Sort by angle
+        // Sort in normalized space so consecutive entries remain consecutive
+        // dartboard boundaries even in strongly foreshortened views.
         sort(finalWires.begin(), finalWires.end(), [&calib](const Point2f &a, const Point2f &b)
              {
-            Point2f dirA = a - Point2f(calib.bullCenter);
-            Point2f dirB = b - Point2f(calib.bullCenter);
-            float angleA = atan2(dirA.y, dirA.x);
-            float angleB = atan2(dirB.y, dirB.x);
+            float angleA = board_geometry::normalizedAngleDegrees(
+                a, Point2f(calib.bullCenter), calib.ellipses.outerDoubleEllipse);
+            float angleB = board_geometry::normalizedAngleDegrees(
+                b, Point2f(calib.bullCenter), calib.ellipses.outerDoubleEllipse);
             return angleA < angleB; });
 
         // Debug visualization
@@ -632,27 +612,71 @@ namespace wire_processing
 
         // Choose detection method based on config
         vector<Point2f> colorWires;
+        vector<Point2f> contourWires;
 
         log_debug("Using ENSEMBLE detection method (Contour + Hough + Scoring)");
-        colorWires = findWiresByEnsemble(frame, colorMask, calib, enableDebug, config);
+        colorWires = findWiresByEnsemble(frame, colorMask, calib, enableDebug, config, &contourWires);
 
         const size_t expected_wire_count = result.wireEndpoints.size();
-        result.isValid = colorWires.size() == expected_wire_count;
+        auto wireDiagnostics = board_geometry::validateWireSpacing(
+            colorWires,
+            Point2f(calib.bullCenter),
+            calib.ellipses.outerDoubleEllipse,
+            expected_wire_count);
+        string selectedSource = "ensemble";
 
-        if (colorWires.size() < expected_wire_count)
+        log_debug("WIRE_GEOMETRY camera=" + to_string(calib.camera_index) +
+                  " source=ensemble count=" + to_string(wireDiagnostics.count) +
+                  " min_gap_deg=" + to_string(wireDiagnostics.minGapDegrees) +
+                  " max_gap_deg=" + to_string(wireDiagnostics.maxGapDegrees) +
+                  " rms_gap_error_deg=" + to_string(wireDiagnostics.rmsGapErrorDegrees) +
+                  " valid=" + (wireDiagnostics.valid ? "true" : "false"));
+
+        // A contour-only result is a safe fallback only when it contains all
+        // 20 boundaries and independently passes the normalized spacing test.
+        // Merely returning 20 contour endpoints is not sufficient.
+        if (!wireDiagnostics.valid)
+        {
+            const auto contourDiagnostics = board_geometry::validateWireSpacing(
+                contourWires,
+                Point2f(calib.bullCenter),
+                calib.ellipses.outerDoubleEllipse,
+                expected_wire_count);
+            log_debug("WIRE_GEOMETRY camera=" + to_string(calib.camera_index) +
+                      " source=contour count=" + to_string(contourDiagnostics.count) +
+                      " min_gap_deg=" + to_string(contourDiagnostics.minGapDegrees) +
+                      " max_gap_deg=" + to_string(contourDiagnostics.maxGapDegrees) +
+                      " rms_gap_error_deg=" + to_string(contourDiagnostics.rmsGapErrorDegrees) +
+                      " valid=" + (contourDiagnostics.valid ? "true" : "false"));
+            if (contourDiagnostics.valid)
+            {
+                colorWires = contourWires;
+                wireDiagnostics = contourDiagnostics;
+                selectedSource = "contour_fallback";
+            }
+        }
+
+        result.isValid = wireDiagnostics.valid;
+        if (!result.isValid)
         {
             log_error("WIRE_DETECTION_STATUS camera=" + to_string(calib.camera_index) +
-                      " status=INVALID detected=" + to_string(colorWires.size()) +
-                      " expected=" + to_string(expected_wire_count));
+                      " status=INVALID source=none detected=" + to_string(colorWires.size()) +
+                      " expected=" + to_string(expected_wire_count) +
+                      " reason=normalized_spacing_validation_failed");
             return result;
         }
 
-        // Preserve the existing fixed-size representation while refusing to
-        // call over- or under-detection a valid calibration.
+        sort(colorWires.begin(), colorWires.end(), [&calib](const Point2f &a, const Point2f &b)
+             {
+            return board_geometry::normalizedAngleDegrees(
+                       a, Point2f(calib.bullCenter), calib.ellipses.outerDoubleEllipse) <
+                   board_geometry::normalizedAngleDegrees(
+                       b, Point2f(calib.bullCenter), calib.ellipses.outerDoubleEllipse); });
+
         copy_n(colorWires.begin(), expected_wire_count, result.wireEndpoints.begin());
 
         log_debug("WIRE_DETECTION_STATUS camera=" + to_string(calib.camera_index) +
-                  " status=" + (result.isValid ? "VALID" : "INVALID") +
+                  " status=VALID source=" + selectedSource +
                   " detected=" + to_string(colorWires.size()) +
                   " expected=" + to_string(expected_wire_count));
 

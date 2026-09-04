@@ -41,14 +41,14 @@ namespace orientation_processing
     struct OrientationData
     {
         int camera_index = -1;                                   // Which camera this is for
-        bool isStarCamera = false;                               // Whether the orientation was successfully detected
+        bool isStarCamera = false;                               // Compatibility flag: true for the balanced/centered camera
         Point2f orientation;                                     // Detected orientation vector (e.g., "20" segment position)
         int southWireIndex = -1;                                 // Index of the south wire for this camera
         int wedge20WireIndex = -1;                               // Index of the "20" segment wire
         float angleOffsetFromSouth = 0.0f;                       // Angle offset from the south
         CameraPosition cameraPosition = CameraPosition::UNKNOWN; // Camera position (enum instead of string)
-        int wedgeNumber = -1;                                    // Wedge number (6, 7, or 12)
-        float avgClipWireCrossProduct = 0.0f;                    // Average
+        int wedgeNumber = -1;                                    // Validated orientation anchor wedge (currently 20)
+        float avgClipWireCrossProduct = 0.0f;                    // Signed clip-layout diagnostic
     };
 
     // Helper function to convert enum to string for display

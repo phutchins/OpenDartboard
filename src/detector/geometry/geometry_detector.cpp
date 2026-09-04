@@ -136,7 +136,7 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
                 log_warning("CALIBRATION_SUMMARY status=DEGRADED ready=" + to_string(ready_calibrations) +
                             " degraded=" + to_string(degraded_calibrations) +
                             " invalid=" + to_string(invalid_calibrations) +
-                            "; geometric detection may continue but reliable wedge scoring requires READY orientation");
+                            "; motion uses all camera frames and scoring uses only cameras with READY orientation");
             }
 
             // Save calibration for future use

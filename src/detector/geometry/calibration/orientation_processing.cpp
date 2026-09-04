@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "orientation_processing.hpp"
+#include "board_geometry.hpp"
 #include "perspective_processing.hpp"
 #include "geometry_calibration.hpp"
 #include "utils.hpp"
@@ -175,7 +176,64 @@ namespace orientation_processing
         return clipWires;
     }
 
-    // Determine camera position and calculate comprehensive orientation data
+    struct SectorMatch
+    {
+        int wireIndex = -1;
+        float widthDegrees = 0.0f;
+        float leftMarginDegrees = 0.0f;
+        float rightMarginDegrees = 0.0f;
+        bool valid = false;
+    };
+
+    // Find the sector containing an image-space direction after removing the
+    // ellipse's affine foreshortening. A valid match must put the direction
+    // near the center of a normal-width dartboard sector, not merely anywhere
+    // between two wires.
+    static SectorMatch findSectorForImageDirection(
+        const Point2f &imageDirection,
+        const DartboardCalibration &calib)
+    {
+        SectorMatch result;
+        if (!calib.wires.isValid || calib.wires.wireEndpoints.size() != 20)
+            return result;
+
+        const Point2f center(calib.bullCenter);
+        const float targetAngle = board_geometry::angleDegrees(
+            board_geometry::normalizeVector(imageDirection, calib.ellipses.outerDoubleEllipse));
+
+        for (size_t index = 0; index < calib.wires.wireEndpoints.size(); ++index)
+        {
+            float firstAngle = board_geometry::normalizedAngleDegrees(
+                calib.wires.wireEndpoints[index], center, calib.ellipses.outerDoubleEllipse);
+            float secondAngle = board_geometry::normalizedAngleDegrees(
+                calib.wires.wireEndpoints[(index + 1) % calib.wires.wireEndpoints.size()],
+                center,
+                calib.ellipses.outerDoubleEllipse);
+            if (secondAngle <= firstAngle)
+                secondAngle += 360.0f;
+
+            float adjustedTarget = targetAngle;
+            if (adjustedTarget < firstAngle)
+                adjustedTarget += 360.0f;
+            if (adjustedTarget < firstAngle || adjustedTarget > secondAngle)
+                continue;
+
+            result.wireIndex = static_cast<int>(index);
+            result.widthDegrees = secondAngle - firstAngle;
+            result.leftMarginDegrees = adjustedTarget - firstAngle;
+            result.rightMarginDegrees = secondAngle - adjustedTarget;
+            result.valid = result.widthDegrees >= 8.0f && result.widthDegrees <= 28.0f &&
+                           result.leftMarginDegrees >= 4.0f && result.rightMarginDegrees >= 4.0f &&
+                           std::fabs(result.leftMarginDegrees - result.rightMarginDegrees) <= 5.0f;
+            return result;
+        }
+        return result;
+    }
+
+    // Determine camera layout from real clip candidates. Absolute wedge
+    // orientation is only established for a balanced centered view, where the
+    // installed board's 20 sector is independently constrained to image north.
+    // A side bias identifies the camera role but cannot safely identify wedge 20.
     static OrientationData determineCameraPosition(const vector<pair<Point2f, Point2f>> &clipWires, const DartboardCalibration &calib)
     {
         log_debug("=== DETERMINING CAMERA POSITION FOR CAMERA " + log_string(calib.camera_index) + " ===");
@@ -183,147 +241,78 @@ namespace orientation_processing
         OrientationData result;
         result.camera_index = calib.camera_index;
 
-        Point2f center = calib.bullCenter;
+        const Point2f center(calib.bullCenter);
+        vector<Point2f> clipPoints;
+        clipPoints.reserve(clipWires.size());
+        for (const auto &wire : clipWires)
+            clipPoints.push_back(wire.first);
 
-        // STEP 1: Check if this is the star camera (using clip wire angle analysis)
-        if (clipWires.size() == 4)
+        const auto clipLayout = board_geometry::analyzeClipLayout(clipPoints, center);
+        result.avgClipWireCrossProduct = -clipLayout.horizontalBalance;
+        log_debug("ORIENTATION_CANDIDATES camera=" + to_string(calib.camera_index) +
+                  " raw=" + to_string(clipWires.size()) +
+                  " valid=" + to_string(clipLayout.validCount) +
+                  " left=" + to_string(clipLayout.leftCount) +
+                  " right=" + to_string(clipLayout.rightCount) +
+                  " horizontal_balance=" + to_string(clipLayout.horizontalBalance));
+
+        // Find the actual closest wire to image south. The old implementation
+        // selected the smallest positive angle, which was not necessarily the
+        // closest wire on the other side of the 0/360 boundary.
+        const float southAngle = board_geometry::angleDegrees(
+            board_geometry::normalizeVector(Point2f(0.0f, 1.0f), calib.ellipses.outerDoubleEllipse));
+        float closestSouthDifference = 360.0f;
+        for (size_t index = 0; index < calib.wires.wireEndpoints.size(); ++index)
         {
-            // Calculate angles of all 4 clip wires relative to south
-            vector<float> angles;
-            for (const auto &wire : clipWires)
+            const float wireAngle = board_geometry::normalizedAngleDegrees(
+                calib.wires.wireEndpoints[index], center, calib.ellipses.outerDoubleEllipse);
+            const float difference = board_geometry::circularAngleDifference(wireAngle, southAngle);
+            if (difference < closestSouthDifference)
             {
-                Point2f wireDirection = wire.first - center;
-                float length = norm(wireDirection);
-                if (length > 0)
-                {
-                    wireDirection = wireDirection / length;
-                    float angle = atan2(wireDirection.x, wireDirection.y) * 180.0f / CV_PI;
-                    if (angle < 0)
-                        angle += 360;
-                    angles.push_back(angle);
-                }
-            }
-
-            if (angles.size() == 4)
-            {
-                sort(angles.begin(), angles.end());
-
-                // Calculate angle differences and standard deviation
-                vector<float> angleDiffs;
-                for (int i = 0; i < 4; i++)
-                {
-                    float diff = angles[(i + 1) % 4] - angles[i];
-                    if (i == 3)
-                        diff = (angles[0] + 360) - angles[3];
-                    if (diff < 0)
-                        diff += 360;
-                    angleDiffs.push_back(diff);
-                }
-
-                float avgDiff = 0;
-                for (float diff : angleDiffs)
-                    avgDiff += diff;
-                avgDiff /= 4;
-
-                float variance = 0;
-                for (float diff : angleDiffs)
-                {
-                    variance += (diff - avgDiff) * (diff - avgDiff);
-                }
-                variance /= 4;
-                float stdDev = sqrt(variance);
-
-                // Star camera has irregular spacing (high std dev)
-                result.isStarCamera = (abs(avgDiff - 90.0f) < 15.0f) && (stdDev > 15.0f);
+                closestSouthDifference = difference;
+                result.southWireIndex = static_cast<int>(index);
+                result.angleOffsetFromSouth = difference;
             }
         }
 
-        // STEP 2: Find south wire index
-        float smallestAngle = 360.0f;
-
-        for (int i = 0; i < calib.wires.wireEndpoints.size(); i++)
+        switch (clipLayout.layout)
         {
-            Point2f wireDirection = calib.wires.wireEndpoints[i] - center;
-            float length = norm(wireDirection);
-            if (length > 0)
-            {
-                wireDirection = wireDirection / length;
-                float angle = atan2(wireDirection.x, wireDirection.y) * 180.0f / CV_PI;
-                if (angle < 0)
-                    angle += 360;
-
-                if (angle >= 0 && angle < smallestAngle)
-                {
-                    smallestAngle = angle;
-                    result.southWireIndex = i;
-                    result.angleOffsetFromSouth = angle; // Store the exact angle offset
-                }
-            }
-        }
-
-        // STEP 3: Determine camera position and calculate all orientation data
-        if (result.isStarCamera)
+        case board_geometry::ClipLayout::BALANCED:
         {
             result.cameraPosition = CameraPosition::MIDDLE;
-            result.wedgeNumber = 6;
-            // For star camera: wedge 20 is 5 steps back from south wire (wedge 6)
-            result.wedge20WireIndex = result.southWireIndex - 5;
-            if (result.wedge20WireIndex < 0)
-                result.wedge20WireIndex += calib.wires.wireEndpoints.size();
-        }
-        else
-        {
-            // For non-star cameras: analyze CLIP WIRES to determine camera position
-            if (clipWires.size() == 4)
+            result.isStarCamera = true;
+            const SectorMatch northSector = findSectorForImageDirection(Point2f(0.0f, -1.0f), calib);
+            log_debug("ORIENTATION_NORTH_SECTOR camera=" + to_string(calib.camera_index) +
+                      " wire=" + to_string(northSector.wireIndex) +
+                      " width_deg=" + to_string(northSector.widthDegrees) +
+                      " left_margin_deg=" + to_string(northSector.leftMarginDegrees) +
+                      " right_margin_deg=" + to_string(northSector.rightMarginDegrees) +
+                      " valid=" + (northSector.valid ? "true" : "false"));
+            if (northSector.valid)
             {
-                Point2f southDirection(0, 1); // Pointing down
-                int validClipWires = 0;
-
-                // Calculate average cross product of all clip wires relative to south line
-                for (const auto &clipWire : clipWires)
-                {
-                    Point2f wireDirection = clipWire.first - center;
-                    float length = norm(wireDirection);
-                    if (length > 0)
-                    {
-                        wireDirection = wireDirection / length;
-
-                        // Calculate cross product to determine which side of south line the clip wire is on
-                        float crossProduct = southDirection.x * wireDirection.y - southDirection.y * wireDirection.x;
-                        result.avgClipWireCrossProduct += crossProduct;
-                        validClipWires++;
-                    }
-                }
-
-                if (validClipWires > 0)
-                {
-                    result.avgClipWireCrossProduct /= validClipWires;
-
-                    if (result.avgClipWireCrossProduct < 0)
-                    {
-                        // Clip wires are predominantly to the LEFT of south line → TOP camera → wedge 12
-                        result.cameraPosition = CameraPosition::TOP;
-                        result.wedgeNumber = 12;
-                        // For top camera: wedge 20 is 17 steps back from south wire (wedge 12)
-                        result.wedge20WireIndex = result.southWireIndex - 18;
-                        if (result.wedge20WireIndex < 0)
-                            result.wedge20WireIndex += calib.wires.wireEndpoints.size();
-                    }
-                    else
-                    {
-                        // Clip wires are predominantly to the RIGHT of south line → BOTTOM camera → wedge 7
-                        result.cameraPosition = CameraPosition::BOTTOM;
-                        result.wedgeNumber = 7;
-                        // For bottom camera: wedge 20 is 12 steps back from south wire (wedge 7)
-                        result.wedge20WireIndex = result.southWireIndex - 12;
-                        if (result.wedge20WireIndex < 0)
-                            result.wedge20WireIndex += calib.wires.wireEndpoints.size();
-                    }
-                }
+                result.wedge20WireIndex = northSector.wireIndex;
+                result.wedgeNumber = 20;
             }
+            break;
+        }
+        case board_geometry::ClipLayout::LEFT_BIASED:
+            result.cameraPosition = CameraPosition::BOTTOM;
+            break;
+        case board_geometry::ClipLayout::RIGHT_BIASED:
+            result.cameraPosition = CameraPosition::TOP;
+            break;
+        case board_geometry::ClipLayout::UNKNOWN:
+            break;
         }
 
-        // STEP 4: Debug output
+        if (result.cameraPosition != CameraPosition::UNKNOWN && result.wedge20WireIndex < 0)
+        {
+            log_warning("ORIENTATION_STATUS camera=" + to_string(calib.camera_index) +
+                        " status=DEGRADED role=" + cameraPositionToString(result.cameraPosition) +
+                        " reason=absolute_wedge20_not_validated");
+        }
+
+        // Debug output
         log_debug("Camera " + log_string(calib.camera_index) + " Position: " + cameraPositionToString(result.cameraPosition));
         log_debug("Camera " + log_string(calib.camera_index) + " Wedge Number: " + log_string(result.wedgeNumber));
         log_debug("Camera " + log_string(calib.camera_index) + " South Wire Index: " + log_string(result.southWireIndex));
