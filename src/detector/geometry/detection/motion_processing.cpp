@@ -26,6 +26,14 @@ namespace motion_processing
     static vector<double> intensity_history;
     static int stable_frame_count = 0;
 
+    // Debug-only pre-trigger telemetry accumulates peaks between rate-limited
+    // log entries so a brief dart-sized pulse is not lost before the next log.
+    static bool pretrigger_window_initialized = false;
+    static chrono::steady_clock::time_point pretrigger_window_start;
+    static vector<double> pretrigger_peak_ratios;
+    static double pretrigger_peak_average = 0.0;
+    static bool pretrigger_activity_seen = false;
+
     static string formatCameraRatios(const vector<MotionData> &motion_data)
     {
         ostringstream output;
@@ -52,6 +60,68 @@ namespace motion_processing
         }
         output << "]";
         return output.str();
+    }
+
+    static string formatRatioValues(const vector<double> &ratios)
+    {
+        ostringstream output;
+        output << fixed << setprecision(6) << "[";
+        for (size_t i = 0; i < ratios.size(); ++i)
+        {
+            if (i > 0)
+                output << ",";
+            output << "cam" << i << "=" << ratios[i];
+        }
+        output << "]";
+        return output.str();
+    }
+
+    static void resetPretriggerWindow(size_t cameraCount, chrono::steady_clock::time_point now)
+    {
+        pretrigger_window_initialized = true;
+        pretrigger_window_start = now;
+        pretrigger_peak_ratios.assign(cameraCount, 0.0);
+        pretrigger_peak_average = 0.0;
+        pretrigger_activity_seen = false;
+    }
+
+    static void recordPretriggerTelemetry(
+        const vector<MotionData> &motionData,
+        double currentAverage,
+        chrono::steady_clock::time_point now,
+        const MotionParams &params)
+    {
+        if (!pretrigger_window_initialized || pretrigger_peak_ratios.size() != motionData.size())
+            resetPretriggerWindow(motionData.size(), now);
+
+        double currentMax = 0.0;
+        for (size_t index = 0; index < motionData.size(); ++index)
+        {
+            pretrigger_peak_ratios[index] = max(pretrigger_peak_ratios[index], motionData[index].motion_ratio);
+            currentMax = max(currentMax, motionData[index].motion_ratio);
+        }
+        pretrigger_peak_average = max(pretrigger_peak_average, currentAverage);
+        if (currentMax >= params.pretrigger_activity_ratio)
+            pretrigger_activity_seen = true;
+
+        const auto elapsedMs = chrono::duration_cast<chrono::milliseconds>(now - pretrigger_window_start).count();
+        if (elapsedMs < max(1, params.pretrigger_log_interval_ms))
+            return;
+
+        if (pretrigger_activity_seen)
+        {
+            const double peakMax = pretrigger_peak_ratios.empty()
+                                       ? 0.0
+                                       : *max_element(pretrigger_peak_ratios.begin(), pretrigger_peak_ratios.end());
+            log_debug("MOTION_PRETRIGGER state=IDLE peak_ratios=" + formatRatioValues(pretrigger_peak_ratios) +
+                      " peak_average=" + to_string(pretrigger_peak_average) +
+                      " peak_max=" + to_string(peakMax) +
+                      " spike_threshold=" + to_string(params.spike_threshold) +
+                      " per_camera_threshold=" + to_string(params.threshold_ratio) +
+                      " activity_floor=" + to_string(params.pretrigger_activity_ratio) +
+                      " window_ms=" + to_string(elapsedMs));
+        }
+        resetPretriggerWindow(motionData.size(), now);
     }
 
     vector<MotionData> detectMotion(const vector<Mat> &current_frames, const vector<Mat> &background_frames, bool debug_mode, const MotionParams &params)
@@ -185,6 +255,12 @@ namespace motion_processing
 
         double current_intensity = total_intensity / motion_data.size();
 
+        if (debug_mode && current_state == DartEventState::IDLE &&
+            current_intensity <= params.spike_threshold)
+        {
+            recordPretriggerTelemetry(motion_data, current_intensity, now, params);
+        }
+
         // Initialize cameras_spiked vector if needed
         if (cameras_spiked.size() != motion_data.size())
         {
@@ -219,6 +295,7 @@ namespace motion_processing
                     peak_motion_ratios[i] = motion_data[i].motion_ratio;
                 intensity_history.clear();
                 stable_frame_count = 0;
+                resetPretriggerWindow(motion_data.size(), now);
 
                 // Mark cameras that are spiking
                 for (size_t i = 0; i < motion_data.size(); i++)
@@ -252,6 +329,7 @@ namespace motion_processing
 
             int cameras_that_spiked = count(cameras_spiked.begin(), cameras_spiked.end(), true);
             auto event_duration = chrono::duration_cast<chrono::milliseconds>(now - event_start_time).count();
+            const int spike_window_duration_ms = spikeWindowDurationMs(params);
 
             // Check if we have enough camera participation and motion is settling
             if (cameras_that_spiked >= params.min_cameras_for_event &&
@@ -269,7 +347,8 @@ namespace motion_processing
             }
             // Timeout if event takes too long or insufficient participation
             else if (event_duration > params.max_event_duration_ms ||
-                     (event_duration > params.spike_window_frames * 50 && cameras_that_spiked < params.min_cameras_for_event))
+                     (spike_window_duration_ms > 0 && event_duration > spike_window_duration_ms &&
+                      cameras_that_spiked < params.min_cameras_for_event))
             {
                 current_state = DartEventState::IDLE;
                 log_warning("DART EVENT: Event timeout or insufficient cameras (" + to_string(cameras_that_spiked) + "/" + to_string(params.min_cameras_for_event) + ") after " + to_string(event_duration) + "ms");
@@ -278,6 +357,7 @@ namespace motion_processing
                     log_debug("MOTION_EVENT_REJECTED reason=timeout_or_insufficient_cameras cameras=" +
                               to_string(cameras_that_spiked) + "/" + to_string(params.min_cameras_for_event) +
                               " average=" + to_string(current_intensity) +
+                              " spike_window_ms=" + to_string(spike_window_duration_ms) +
                               " peaks=" + formatPeakRatios());
                 }
             }

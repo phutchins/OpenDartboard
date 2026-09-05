@@ -38,6 +38,7 @@ int main(int argc, char **argv)
   motion_params.spike_threshold = getArg(argc, argv, "--motion-spike-threshold", motion_params.spike_threshold);
   motion_params.low_threshold = getArg(argc, argv, "--motion-low-threshold", motion_params.low_threshold);
   motion_params.min_cameras_for_event = getArg(argc, argv, "--motion-min-cameras", motion_params.min_cameras_for_event);
+  motion_params.processing_fps = fps;
 
   if (!std::isfinite(motion_params.spike_threshold) || motion_params.spike_threshold <= 0.0 || motion_params.spike_threshold > 1.0 ||
       !std::isfinite(motion_params.low_threshold) || motion_params.low_threshold < 0.0 || motion_params.low_threshold >= motion_params.spike_threshold ||
@@ -87,7 +88,9 @@ int main(int argc, char **argv)
 
   log_info("MOTION_CONFIG spike_threshold=" + to_string(motion_params.spike_threshold) +
            " low_threshold=" + to_string(motion_params.low_threshold) +
-           " min_cameras=" + to_string(motion_params.min_cameras_for_event));
+           " min_cameras=" + to_string(motion_params.min_cameras_for_event) +
+           " processing_fps=" + to_string(motion_params.processing_fps) +
+           " spike_window_ms=" + to_string(motion_processing::spikeWindowDurationMs(motion_params)));
 
   // Initialise the scorer with debug mode if requested
   Scorer scorer(model_path, width, height, fps, cams, debug_mode, detector_type, motion_params);

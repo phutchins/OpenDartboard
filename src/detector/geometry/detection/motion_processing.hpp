@@ -2,6 +2,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <chrono>
+#include <cmath>
 
 using namespace cv;
 using namespace std;
@@ -37,7 +38,21 @@ namespace motion_processing
         int stability_frames = 15;         // Consecutive low-motion frames needed for stability
         int max_event_duration_ms = 10000; // Maximum time for dart event (safety timeout)
         int cooldown_period_ms = 1000;     // Cooldown after dart detection
+
+        // Runtime cadence and debug-only pre-trigger diagnostics. These do not
+        // change production detection thresholds.
+        double processing_fps = 15.0;               // Configured camera/processing frame rate
+        double pretrigger_activity_ratio = 0.005;   // Per-camera activity worth reporting in debug mode
+        int pretrigger_log_interval_ms = 1000;      // Maximum pre-trigger debug log rate
     };
+
+    inline int spikeWindowDurationMs(const MotionParams &params)
+    {
+        if (params.spike_window_frames <= 0 || !std::isfinite(params.processing_fps) || params.processing_fps <= 0.0)
+            return 0;
+        return static_cast<int>(std::ceil(
+            static_cast<double>(params.spike_window_frames) * 1000.0 / params.processing_fps));
+    }
 
     // Event states for dart detection
     enum class DartEventState
