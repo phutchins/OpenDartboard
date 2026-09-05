@@ -56,6 +56,7 @@ namespace debug
         std::cout << "  --motion-spike-threshold <ratio>  Motion ratio that starts an event (default: 0.08)\n";
         std::cout << "  --motion-low-threshold <ratio>    Motion ratio considered stable (default: 0.001)\n";
         std::cout << "  --motion-min-cameras <count>      Cameras required for an event (default: 2)\n";
+        std::cout << "  --motion-pretrigger-activity-ratio <ratio>  Debug activity reporting floor (default: 0.005)\n";
         std::cout << "  --debug, -d          Enable debug mode (saves frames to debug_frames/ directory)\n";
         std::cout << "  --quiet, -q          Quiet mode (only show errors)\n";
         std::cout << "  --version            Show version information\n";

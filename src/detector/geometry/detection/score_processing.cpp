@@ -1,9 +1,12 @@
 #include "score_processing.hpp"
+#include "ellipse_metrics.hpp"
 #include "utils.hpp"
 #include "utils/streamer.hpp"
 #include "../calibration/geometry_calibration.hpp"
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 
 using namespace cv;
 using namespace std;
@@ -13,6 +16,41 @@ namespace score_processing
 
     static bool initialized = false;
     static unique_ptr<streamer> point_on_screen_streamer;
+
+    static string formatEllipseTelemetry(
+        const string &name,
+        const Point2f &point,
+        const RotatedRect &ellipse)
+    {
+        ostringstream output;
+        output << fixed << setprecision(6)
+               << name << "_center_x=" << ellipse.center.x << " "
+               << name << "_center_y=" << ellipse.center.y << " "
+               << name << "_width=" << ellipse.size.width << " "
+               << name << "_height=" << ellipse.size.height << " "
+               << name << "_angle_deg=" << ellipse.angle << " "
+               << name << "_radius=" << normalizedEllipseRadius(point, ellipse) << " "
+               << name << "_margin=" << signedNormalizedEllipseMargin(point, ellipse);
+        return output.str();
+    }
+
+    static void logRingClassificationTelemetry(
+        size_t camera_index,
+        const Point2f &point,
+        const DartboardCalibration &calibration)
+    {
+        ostringstream prefix;
+        prefix << fixed << setprecision(3)
+               << "RING_CLASSIFICATION camera=" << camera_index
+               << " point_x=" << point.x
+               << " point_y=" << point.y << " ";
+
+        log_debug(prefix.str() +
+                  formatEllipseTelemetry("inner_triple", point, calibration.ellipses.innerTripleEllipse) + " " +
+                  formatEllipseTelemetry("outer_triple", point, calibration.ellipses.outerTripleEllipse) + " " +
+                  formatEllipseTelemetry("inner_double", point, calibration.ellipses.innerDoubleEllipse) + " " +
+                  formatEllipseTelemetry("outer_double", point, calibration.ellipses.outerDoubleEllipse));
+    }
 
     bool normalizeDartboardPosition(
         const Point2f &pixel,
@@ -250,6 +288,13 @@ namespace score_processing
             for (size_t i = 0; i < camera_count; i++)
             {
                 log_debug("-------");
+                if (debug_mode && dart_result.camera_results[i].tip_found)
+                {
+                    logRingClassificationTelemetry(
+                        i,
+                        dart_result.camera_results[i].tip_position,
+                        calibrations[i]);
+                }
                 string score_test = getScoreAtPoint(dart_result.camera_results[i].tip_position, calibrations[i]);
                 log_debug("-------");
 

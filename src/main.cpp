@@ -38,13 +38,18 @@ int main(int argc, char **argv)
   motion_params.spike_threshold = getArg(argc, argv, "--motion-spike-threshold", motion_params.spike_threshold);
   motion_params.low_threshold = getArg(argc, argv, "--motion-low-threshold", motion_params.low_threshold);
   motion_params.min_cameras_for_event = getArg(argc, argv, "--motion-min-cameras", motion_params.min_cameras_for_event);
+  motion_params.pretrigger_activity_ratio = getArg(
+      argc, argv, "--motion-pretrigger-activity-ratio", motion_params.pretrigger_activity_ratio);
   motion_params.processing_fps = fps;
 
   if (!std::isfinite(motion_params.spike_threshold) || motion_params.spike_threshold <= 0.0 || motion_params.spike_threshold > 1.0 ||
       !std::isfinite(motion_params.low_threshold) || motion_params.low_threshold < 0.0 || motion_params.low_threshold >= motion_params.spike_threshold ||
+      !motion_processing::isValidPretriggerActivityRatio(motion_params.pretrigger_activity_ratio) ||
       motion_params.min_cameras_for_event < 1)
   {
-    cerr << "Invalid motion configuration: require 0 <= low threshold < spike threshold <= 1 and at least one camera" << endl;
+    cerr << "Invalid motion configuration: require 0 <= low threshold < spike threshold <= 1, "
+            "0 <= pre-trigger activity ratio <= 1, and at least one camera"
+         << endl;
     return 2;
   }
 
@@ -88,6 +93,7 @@ int main(int argc, char **argv)
 
   log_info("MOTION_CONFIG spike_threshold=" + to_string(motion_params.spike_threshold) +
            " low_threshold=" + to_string(motion_params.low_threshold) +
+           " pretrigger_activity_ratio=" + to_string(motion_params.pretrigger_activity_ratio) +
            " min_cameras=" + to_string(motion_params.min_cameras_for_event) +
            " processing_fps=" + to_string(motion_params.processing_fps) +
            " spike_window_ms=" + to_string(motion_processing::spikeWindowDurationMs(motion_params)));

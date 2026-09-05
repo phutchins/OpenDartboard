@@ -54,6 +54,11 @@ namespace motion_processing
             static_cast<double>(params.spike_window_frames) * 1000.0 / params.processing_fps));
     }
 
+    inline bool isValidPretriggerActivityRatio(double ratio)
+    {
+        return std::isfinite(ratio) && ratio >= 0.0 && ratio <= 1.0;
+    }
+
     // Event states for dart detection
     enum class DartEventState
     {

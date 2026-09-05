@@ -1,6 +1,7 @@
 #include "detector/geometry/detection/motion_processing.hpp"
 
 #include <iostream>
+#include <limits>
 
 namespace
 {
@@ -21,6 +22,19 @@ int main()
     passed &= require(params.spike_threshold == 0.08, "default spike threshold changed");
     passed &= require(params.low_threshold == 0.001, "default low threshold changed");
     passed &= require(params.min_cameras_for_event == 2, "default minimum camera count changed");
+    passed &= require(params.pretrigger_activity_ratio == 0.005,
+                      "default pre-trigger activity ratio changed");
+    passed &= require(motion_processing::isValidPretriggerActivityRatio(0.0),
+                      "zero must be a valid pre-trigger activity ratio");
+    passed &= require(motion_processing::isValidPretriggerActivityRatio(1.0),
+                      "one must be a valid pre-trigger activity ratio");
+    passed &= require(!motion_processing::isValidPretriggerActivityRatio(-0.001),
+                      "negative pre-trigger activity ratios must be rejected");
+    passed &= require(!motion_processing::isValidPretriggerActivityRatio(1.001),
+                      "pre-trigger activity ratios above one must be rejected");
+    passed &= require(!motion_processing::isValidPretriggerActivityRatio(
+                          std::numeric_limits<double>::quiet_NaN()),
+                      "non-finite pre-trigger activity ratios must be rejected");
 
     params.spike_window_frames = 10;
     params.processing_fps = 15.0;
