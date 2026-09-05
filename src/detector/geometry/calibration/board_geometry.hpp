@@ -185,6 +185,48 @@ namespace board_geometry
         return std::min(difference, 360.0f - difference);
     }
 
+    inline float distanceToBoundaryLinePixels(
+        const cv::Point2f &point,
+        const cv::Point2f &center,
+        const cv::Point2f &boundaryPoint)
+    {
+        const cv::Point2f boundary = boundaryPoint - center;
+        const float boundaryLength = cv::norm(boundary);
+        if (!std::isfinite(boundaryLength) || boundaryLength <= 0.0f)
+            return std::numeric_limits<float>::infinity();
+
+        const cv::Point2f relative = point - center;
+        return std::fabs(relative.x * boundary.y - relative.y * boundary.x) / boundaryLength;
+    }
+
+    template <typename WireContainer>
+    inline float nearestWireDistancePixels(
+        const cv::Point2f &point,
+        const cv::Point2f &center,
+        const WireContainer &wireEndpoints)
+    {
+        float nearest = std::numeric_limits<float>::infinity();
+        for (const auto &wire : wireEndpoints)
+            nearest = std::min(nearest, distanceToBoundaryLinePixels(point, center, wire));
+        return nearest;
+    }
+
+    // A single camera cannot reliably choose a side of a spider wire when the
+    // detected tip is only a pixel or two from the boundary. Keep broadcasting
+    // the best score candidate, but make the uncertainty explicit to clients.
+    inline float singleCameraBoundaryConfidence(float distancePixels, float baseConfidence = 0.7f)
+    {
+        if (!std::isfinite(distancePixels))
+            return baseConfidence;
+        if (distancePixels <= 1.0f)
+            return std::min(baseConfidence, 0.2f);
+        if (distancePixels <= 2.0f)
+            return std::min(baseConfidence, 0.35f);
+        if (distancePixels <= 4.0f)
+            return std::min(baseConfidence, 0.5f);
+        return baseConfidence;
+    }
+
     inline std::vector<std::vector<cv::Point2f>> groupByNormalizedAngle(
         const std::vector<cv::Point2f> &points,
         const cv::Point2f &center,
@@ -253,7 +295,7 @@ namespace board_geometry
         const cv::RotatedRect &ellipse,
         size_t expectedCount = 20,
         float minGapDegrees = 8.0f,
-        float maxGapDegrees = 28.0f,
+        float maxGapDegrees = 30.0f,
         float maxRmsGapErrorDegrees = 6.0f)
     {
         WireSpacingDiagnostics result;

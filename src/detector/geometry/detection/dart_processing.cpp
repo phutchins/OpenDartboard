@@ -1,4 +1,6 @@
 #include "dart_processing.hpp"
+#include "dart_geometry.hpp"
+#include "../calibration/geometry_calibration.hpp"
 #include "utils.hpp"
 #include "utils/streamer.hpp"
 
@@ -48,7 +50,12 @@ namespace dart_processing
         }
     }
 
-    pair<Point2f, Point2f> detectTipAndCenter(const Mat &binary_thresh, bool debug_mode, int camera_id, vector<Mat> &dart_tips)
+    pair<Point2f, Point2f> detectTipAndCenter(
+        const Mat &binary_thresh,
+        const DartboardCalibration *calibration,
+        bool debug_mode,
+        int camera_id,
+        vector<Mat> &dart_tips)
     {
         Point2f tip_position(0, 0);
         Point2f center_position(0, 0);
@@ -118,27 +125,49 @@ namespace dart_processing
         Point2f biggest_shape_center(m.m10 / m.m00, m.m01 / m.m00);
         center_position = biggest_shape_center;
 
-        // Find the HULL point furthest from the biggest shape's center
+        // Prefer the hull extreme pointing toward the calibrated board. The old
+        // farthest-point rule regularly selected a flight or the bottom frame
+        // edge instead of the embedded tip.
         double max_distance = 0;
         Point furthest_hull_point;
-
-        for (const Point &hull_point : hull)
+        bool selected_boardward = false;
+        if (calibration != nullptr)
         {
-            double distance = norm(Point2f(hull_point) - biggest_shape_center);
-            if (distance > max_distance)
+            const auto selection = dart_geometry::selectBoardwardHullPoint(
+                hull,
+                biggest_shape_center,
+                Point2f(calibration->bullCenter));
+            if (selection.valid && dart_geometry::isPlausibleBoardPoint(
+                                       selection.point,
+                                       Point2f(calibration->bullCenter),
+                                       calibration->ellipses.outerDoubleEllipse))
             {
-                max_distance = distance;
-                furthest_hull_point = hull_point;
+                tip_position = selection.point;
+                max_distance = selection.extensionPixels;
+                selected_boardward = true;
             }
         }
 
-        if (max_distance > 10) // Minimum distance threshold
+        if (!selected_boardward)
         {
-            tip_position = Point2f(furthest_hull_point);
-        }
-        else
-        {
-            log_debug("No tip found - max hull distance too small: " + to_string(max_distance));
+            for (const Point &hull_point : hull)
+            {
+                double distance = norm(Point2f(hull_point) - biggest_shape_center);
+                if (distance > max_distance)
+                {
+                    max_distance = distance;
+                    furthest_hull_point = hull_point;
+                }
+            }
+
+            if (max_distance > 10 &&
+                (calibration == nullptr || dart_geometry::isPlausibleBoardPoint(
+                                               Point2f(furthest_hull_point),
+                                               Point2f(calibration->bullCenter),
+                                               calibration->ellipses.outerDoubleEllipse)))
+                tip_position = Point2f(furthest_hull_point);
+            else
+                log_debug("No plausible tip found - hull distance: " + to_string(max_distance));
         }
 
         // Debug visualization
@@ -208,6 +237,7 @@ namespace dart_processing
             string summary = "Pieces: " + to_string(dart_pieces.size()) +
                              " | Hull: " + to_string(hull.size()) + "pts" +
                              " | Biggest: " + to_string((int)contourArea(biggest_shape)) + "px" +
+                             (selected_boardward ? " | BOARDWARD" : " | FALLBACK") +
                              (norm(tip_position) > 0 ? " | TIP FOUND" : " | NO TIP");
             putText(debug_img, summary, Point(10, 25), FONT_HERSHEY_SIMPLEX, 0.6, Scalar(255, 255, 255), 2);
 
@@ -230,6 +260,7 @@ namespace dart_processing
     }
 
     DartStateResult processDartState(const vector<Mat> &current_frames, const vector<Mat> &background_frames,
+                                     const vector<DartboardCalibration> &calibrations,
                                      bool movement_finished, bool debug_mode, const DartParams &params)
     {
         DartStateResult result;
@@ -415,7 +446,10 @@ namespace dart_processing
                 working_backgrounds[i] = averaged_frame.clone();
 
                 // Use smart tip detection
-                auto tip_and_center = detectTipAndCenter(single_thresh, debug_mode, static_cast<int>(i), dart_tips);
+                const DartboardCalibration *calibration =
+                    i < calibrations.size() ? &calibrations[i] : nullptr;
+                auto tip_and_center = detectTipAndCenter(
+                    single_thresh, calibration, debug_mode, static_cast<int>(i), dart_tips);
                 Point2f tip_pos = tip_and_center.first;
                 Point2f center_pos = tip_and_center.second;
 

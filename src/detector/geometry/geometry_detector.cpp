@@ -39,7 +39,8 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
     motion_processing::MotionResult motion_result = motion_processing::processMotion(frames, background_frames, debug_mode, motion_params);
 
     // Process dart state detection
-    dart_processing::DartStateResult dart_result = dart_processing::processDartState(frames, background_frames, motion_result.motion_finished, debug_mode);
+    dart_processing::DartStateResult dart_result = dart_processing::processDartState(
+        frames, background_frames, calibrations, motion_result.motion_finished, debug_mode);
 
     // Process scoring using the new scoring system
     score_processing::ScoreResult score_result = score_processing::processScore(background_frames, dart_result, calibrations, debug_mode);

@@ -1,0 +1,48 @@
+FROM debian:bookworm-slim AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG APP_VERSION=0.0.0-dev
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libgstreamer-plugins-base1.0-dev \
+        libgstreamer1.0-dev \
+        libopencv-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN cmake -S . -B build \
+        -DAPP_VERSION=${APP_VERSION} \
+        -DBUILD_TESTING=ON \
+    && cmake --build build --parallel 2 \
+    && ctest --test-dir build --output-on-failure
+
+FROM debian:bookworm-slim AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gstreamer1.0-libav \
+        gstreamer1.0-plugins-base \
+        libopencv-calib3d406 \
+        libopencv-core406 \
+        libopencv-imgcodecs406 \
+        libopencv-imgproc406 \
+        libopencv-videoio406 \
+        v4l-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/build/opendartboard /usr/local/bin/opendartboard
+
+WORKDIR /var/lib/opendartboard
+
+ENTRYPOINT ["/usr/local/bin/opendartboard"]
+CMD ["--autocams", "--width", "1280", "--height", "720", "--fps", "30"]

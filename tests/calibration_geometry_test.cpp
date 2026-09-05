@@ -59,6 +59,32 @@ int main()
                            .valid,
                       "duplicate and missing boundaries must fail validation");
 
+    std::vector<cv::Point2f> cameraTwoLikeWires;
+    float accumulatedAngle = 0.0f;
+    cameraTwoLikeWires.push_back(pointAtNormalizedAngle(accumulatedAngle, center, obliqueEllipse));
+    accumulatedAngle += 28.2f;
+    for (int index = 1; index < 20; ++index)
+    {
+        cameraTwoLikeWires.push_back(pointAtNormalizedAngle(accumulatedAngle, center, obliqueEllipse));
+        accumulatedAngle += (360.0f - 28.2f) / 19.0f;
+    }
+    passed &= require(board_geometry::validateWireSpacing(
+                           cameraTwoLikeWires, center, obliqueEllipse)
+                           .valid,
+                      "a noisy 28.2 degree contour gap must remain recoverable");
+
+    passed &= require(std::fabs(board_geometry::nearestWireDistancePixels(
+                                    center + cv::Point2f(100.0f, 1.0f),
+                                    center,
+                                    std::vector<cv::Point2f>{
+                                        center + cv::Point2f(200.0f, 0.0f)}) -
+                                1.0f) < 0.001f,
+                      "wire proximity must be measured perpendicular to the boundary");
+    passed &= require(board_geometry::singleCameraBoundaryConfidence(0.5f) == 0.2f,
+                      "sub-pixel wire decisions must be low confidence");
+    passed &= require(board_geometry::singleCameraBoundaryConfidence(5.0f) == 0.7f,
+                      "well-separated single-camera scores must retain base confidence");
+
     const auto balanced = board_geometry::analyzeClipLayout(
         {center + cv::Point2f(-250.0f, -160.0f), center + cv::Point2f(250.0f, -160.0f)},
         center);

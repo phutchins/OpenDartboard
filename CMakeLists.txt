@@ -144,4 +144,16 @@ if(BUILD_TESTING)
     target_link_libraries(ellipse_metrics_test PRIVATE ${OpenCV_LIBS})
     target_compile_features(ellipse_metrics_test PRIVATE cxx_std_17)
     add_test(NAME ellipse_metrics_test COMMAND ellipse_metrics_test)
+
+    add_executable(dart_geometry_test
+        tests/dart_geometry_test.cpp
+    )
+    target_include_directories(dart_geometry_test PRIVATE
+        ${OpenCV_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        /usr/include/opencv4
+    )
+    target_link_libraries(dart_geometry_test PRIVATE ${OpenCV_LIBS})
+    target_compile_features(dart_geometry_test PRIVATE cxx_std_17)
+    add_test(NAME dart_geometry_test COMMAND dart_geometry_test)
 endif()

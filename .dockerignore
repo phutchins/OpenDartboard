@@ -1,0 +1,9 @@
+.git
+.github
+.vscode
+build
+dist
+mocks
+src.tgz
+._*
+**/._*

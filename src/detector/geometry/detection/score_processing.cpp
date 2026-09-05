@@ -3,9 +3,11 @@
 #include "utils.hpp"
 #include "utils/streamer.hpp"
 #include "../calibration/geometry_calibration.hpp"
+#include "../calibration/board_geometry.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 using namespace cv;
@@ -281,7 +283,13 @@ namespace score_processing
         case dart_processing::DartBoardState::DART_2:
         case dart_processing::DartBoardState::DART_3:
             // Collect scores from all cameras with detected tips
-            vector<pair<string, int>> camera_scores; // (score, camera_index)
+            struct CameraScoreCandidate
+            {
+                string score;
+                int camera_index;
+                float nearest_wire_distance;
+            };
+            vector<CameraScoreCandidate> camera_scores;
             vector<Mat> points_on_screen;            // For debug images
 
             const size_t camera_count = min({dart_result.camera_results.size(), calibrations.size(), background_frames.size()});
@@ -316,7 +324,17 @@ namespace score_processing
 
                 if (dart_result.camera_results[i].tip_found && score_test != "MISS")
                 {
-                    camera_scores.push_back({score_test, static_cast<int>(i)});
+                    float nearest_wire_distance = numeric_limits<float>::infinity();
+                    if (score_test != "BULL" && score_test != "OUTER")
+                    {
+                        nearest_wire_distance = board_geometry::nearestWireDistancePixels(
+                            dart_result.camera_results[i].tip_position,
+                            Point2f(calibrations[i].bullCenter),
+                            calibrations[i].wires.wireEndpoints);
+                    }
+                    camera_scores.push_back({score_test, static_cast<int>(i), nearest_wire_distance});
+                    log_debug("SCORE_BOUNDARY_PROXIMITY camera=" + to_string(i) +
+                              " distance_px=" + to_string(nearest_wire_distance));
                 }
             }
 
@@ -340,9 +358,9 @@ namespace score_processing
 
                 // Count occurrences of each score
                 map<string, vector<int>> score_cameras;
-                for (const auto &[score, camera_idx] : camera_scores)
+                for (const auto &candidate : camera_scores)
                 {
-                    score_cameras[score].push_back(camera_idx);
+                    score_cameras[candidate.score].push_back(candidate.camera_index);
                 }
 
                 // Look for consensus (2+ cameras agreeing)
@@ -367,11 +385,15 @@ namespace score_processing
                 else
                 {
                     // No consensus, use first available score
-                    final_score = camera_scores[0].first;
-                    best_camera = camera_scores[0].second;
+                    final_score = camera_scores[0].score;
+                    best_camera = camera_scores[0].camera_index;
                     log_info("No consensus, using single camera score: " + final_score + " from camera " + to_string(best_camera));
+                    const float confidence = board_geometry::singleCameraBoundaryConfidence(
+                        camera_scores[0].nearest_wire_distance);
                     log_debug("SCORE_CONFIDENCE mode=SINGLE_CAMERA camera=" + to_string(best_camera) +
-                              " confidence=0.7 reason=no_second_ready_camera_agreement");
+                              " confidence=" + to_string(confidence) +
+                              " nearest_wire_distance_px=" + to_string(camera_scores[0].nearest_wire_distance) +
+                              " reason=no_second_ready_camera_agreement");
                 }
 
                 result.score = final_score;
@@ -380,7 +402,10 @@ namespace score_processing
                 result.has_dartboard_position = normalizeDartboardPosition(result.pixel_position, calibrations[best_camera], result.dartboard_position);
                 if (!result.has_dartboard_position)
                     result.dartboard_position = Point2f(-1, -1);
-                result.confidence = consensus_score.empty() ? 0.7f : 0.9f;
+                result.confidence = consensus_score.empty()
+                                        ? board_geometry::singleCameraBoundaryConfidence(
+                                              camera_scores[0].nearest_wire_distance)
+                                        : 0.9f;
                 result.camera_index = best_camera;
                 result.valid = true;
             }

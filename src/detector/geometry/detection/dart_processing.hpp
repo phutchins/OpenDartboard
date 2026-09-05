@@ -5,6 +5,8 @@
 using namespace cv;
 using namespace std;
 
+struct DartboardCalibration;
+
 namespace dart_processing
 {
     // Dart board state - exactly as you described
@@ -60,6 +62,7 @@ namespace dart_processing
     DartStateResult processDartState(
         const vector<Mat> &current_frames,
         const vector<Mat> &background_frames,
+        const vector<DartboardCalibration> &calibrations,
         bool movement_finished = false,
         bool debug_mode = false,
         const DartParams &params = DartParams());
