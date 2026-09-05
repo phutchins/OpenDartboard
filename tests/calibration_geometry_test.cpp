@@ -79,5 +79,49 @@ int main()
     passed &= require(ambiguous.layout == board_geometry::ClipLayout::UNKNOWN,
                       "an intermediate clip balance must remain unknown");
 
+    const cv::Size frameSize(1280, 720);
+    const cv::RotatedRect outerDouble(center, cv::Size2f(600.0f, 300.0f), 0.0f);
+
+    const auto agreeingBulls = board_geometry::selectBullCenterRefinement(
+        cv::Point2f(623.0f, 422.0f),
+        cv::RotatedRect(cv::Point2f(624.0f, 447.0f), cv::Size2f(30.0f, 16.0f), 0.0f),
+        cv::RotatedRect(cv::Point2f(624.5f, 447.5f), cv::Size2f(62.0f, 32.0f), 0.0f),
+        outerDouble,
+        frameSize);
+    passed &= require(agreeingBulls.accepted,
+                      "concentric fitted bull ellipses must refine the coarse center");
+    passed &= require(agreeingBulls.source == board_geometry::BullCenterSource::INNER_BULL,
+                      "inner bull must be preferred when fitted bull centers agree");
+
+    const auto disagreeingBulls = board_geometry::selectBullCenterRefinement(
+        cv::Point2f(598.0f, 408.0f),
+        cv::RotatedRect(cv::Point2f(563.0f, 425.0f), cv::Size2f(30.0f, 27.0f), 0.0f),
+        cv::RotatedRect(cv::Point2f(604.0f, 452.0f), cv::Size2f(68.0f, 33.0f), 0.0f),
+        outerDouble,
+        frameSize);
+    passed &= require(disagreeingBulls.accepted,
+                      "bounded outer bull must recover from a false inner-bull component");
+    passed &= require(disagreeingBulls.source == board_geometry::BullCenterSource::OUTER_BULL,
+                      "outer bull must win when fitted bull centers disagree");
+
+    const auto outerOnly = board_geometry::selectBullCenterRefinement(
+        cv::Point2f(616.0f, 404.0f),
+        cv::RotatedRect(),
+        cv::RotatedRect(cv::Point2f(622.0f, 460.0f), cv::Size2f(64.0f, 35.0f), 0.0f),
+        outerDouble,
+        frameSize);
+    passed &= require(outerOnly.accepted &&
+                          outerOnly.source == board_geometry::BullCenterSource::OUTER_BULL,
+                      "outer bull must be a bounded fallback when inner bull is unavailable");
+
+    const auto excessiveShift = board_geometry::selectBullCenterRefinement(
+        cv::Point2f(620.0f, 360.0f),
+        cv::RotatedRect(),
+        cv::RotatedRect(cv::Point2f(620.0f, 425.0f), cv::Size2f(64.0f, 35.0f), 0.0f),
+        outerDouble,
+        frameSize);
+    passed &= require(!excessiveShift.accepted,
+                      "bull refinement beyond 40 percent of minor radius must be rejected");
+
     return passed ? 0 : 1;
 }

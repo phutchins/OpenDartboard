@@ -9,6 +9,131 @@
 
 namespace board_geometry
 {
+    enum class BullCenterSource
+    {
+        NONE,
+        INNER_BULL,
+        OUTER_BULL
+    };
+
+    struct BullCenterRefinement
+    {
+        bool accepted = false;
+        cv::Point2f center{0.0f, 0.0f};
+        BullCenterSource source = BullCenterSource::NONE;
+        float displacementPixels = 0.0f;
+        float maxDisplacementPixels = 0.0f;
+        float innerOuterDistancePixels = 0.0f;
+        float maxInnerOuterDistancePixels = 0.0f;
+        const char *reason = "no_usable_bull_ellipse";
+    };
+
+    inline const char *bullCenterSourceToString(BullCenterSource source)
+    {
+        switch (source)
+        {
+        case BullCenterSource::INNER_BULL:
+            return "inner_bull";
+        case BullCenterSource::OUTER_BULL:
+            return "outer_bull";
+        default:
+            return "none";
+        }
+    }
+
+    inline bool hasUsableEllipseCenter(
+        const cv::RotatedRect &ellipse,
+        const cv::Size &frameSize)
+    {
+        return frameSize.width > 0 && frameSize.height > 0 &&
+               std::isfinite(ellipse.center.x) && std::isfinite(ellipse.center.y) &&
+               std::isfinite(ellipse.size.width) && std::isfinite(ellipse.size.height) &&
+               ellipse.size.width > 0.0f && ellipse.size.height > 0.0f &&
+               ellipse.center.x >= 0.0f && ellipse.center.x < frameSize.width &&
+               ellipse.center.y >= 0.0f && ellipse.center.y < frameSize.height;
+    }
+
+    // Refine a coarse color-contour center from the fitted bull ellipses. The
+    // outer-double minor radius provides a scale-independent displacement
+    // bound. Inner bull is preferred only when its independently fitted outer
+    // bull is concentric; a clipped/noisy inner-bull mask can otherwise select
+    // a nearby artifact.
+    inline BullCenterRefinement selectBullCenterRefinement(
+        const cv::Point2f &coarseCenter,
+        const cv::RotatedRect &innerBull,
+        const cv::RotatedRect &outerBull,
+        const cv::RotatedRect &outerDouble,
+        const cv::Size &frameSize,
+        float maxDisplacementRatio = 0.40f,
+        float maxInnerOuterDistanceRatio = 0.10f)
+    {
+        BullCenterRefinement result;
+        result.center = coarseCenter;
+
+        const float minorRadius =
+            std::min(outerDouble.size.width, outerDouble.size.height) * 0.5f;
+        if (!std::isfinite(coarseCenter.x) || !std::isfinite(coarseCenter.y) ||
+            !std::isfinite(minorRadius) || minorRadius <= 0.0f ||
+            !std::isfinite(maxDisplacementRatio) || maxDisplacementRatio <= 0.0f ||
+            !std::isfinite(maxInnerOuterDistanceRatio) || maxInnerOuterDistanceRatio <= 0.0f)
+        {
+            result.reason = "invalid_reference_geometry";
+            return result;
+        }
+
+        result.maxDisplacementPixels = minorRadius * maxDisplacementRatio;
+        result.maxInnerOuterDistancePixels = minorRadius * maxInnerOuterDistanceRatio;
+
+        const bool innerUsable = hasUsableEllipseCenter(innerBull, frameSize);
+        const bool outerUsable = hasUsableEllipseCenter(outerBull, frameSize);
+        cv::Point2f candidate;
+
+        if (innerUsable && outerUsable)
+        {
+            result.innerOuterDistancePixels = cv::norm(innerBull.center - outerBull.center);
+            if (result.innerOuterDistancePixels <= result.maxInnerOuterDistancePixels)
+            {
+                candidate = innerBull.center;
+                result.source = BullCenterSource::INNER_BULL;
+                result.reason = "inner_outer_agree";
+            }
+            else
+            {
+                candidate = outerBull.center;
+                result.source = BullCenterSource::OUTER_BULL;
+                result.reason = "inner_outer_disagree";
+            }
+        }
+        else if (innerUsable)
+        {
+            candidate = innerBull.center;
+            result.source = BullCenterSource::INNER_BULL;
+            result.reason = "outer_unavailable";
+        }
+        else if (outerUsable)
+        {
+            candidate = outerBull.center;
+            result.source = BullCenterSource::OUTER_BULL;
+            result.reason = "inner_unavailable";
+        }
+        else
+        {
+            return result;
+        }
+
+        result.center = candidate;
+        result.displacementPixels = cv::norm(candidate - coarseCenter);
+        if (!std::isfinite(result.displacementPixels) ||
+            result.displacementPixels > result.maxDisplacementPixels)
+        {
+            result.reason = "displacement_exceeds_bound";
+            return result;
+        }
+
+        result.accepted = true;
+        return result;
+    }
+
     inline cv::Point2f normalizeVector(const cv::Point2f &vector, const cv::RotatedRect &ellipse)
     {
         const float radiusX = ellipse.size.width * 0.5f;

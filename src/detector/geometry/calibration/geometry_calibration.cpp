@@ -12,6 +12,7 @@
 #include "bull_processing.hpp"
 #include "ellipse_processing.hpp"
 #include "wire_processing.hpp"
+#include "board_geometry.hpp"
 #include "orientation_processing.hpp"
 #include "dartboard_visualization.hpp"
 #include "perspective_processing.hpp"
@@ -116,6 +117,58 @@ namespace geometry_calibration
         ellipse_processing::EllipseParams ellipseParams;
         ellipse_processing::EllipseBoundaryData ellipseData = ellipse_processing::processEllipse(orginalFrame, masks, bullCenter, frameCenter, cameraIdx, debugMode, ellipseParams);
         calibration.ellipses = ellipseData;
+
+        // The initial color-contour pass can prefer a large perspective ring
+        // over the bull. Refine it from the independently fitted bull ellipses
+        // before wire and orientation processing, but only within a bounded,
+        // board-scale displacement.
+        const auto bullRefinement = board_geometry::selectBullCenterRefinement(
+            Point2f(calibration.bullCenter),
+            calibration.ellipses.innerBullEllipse,
+            calibration.ellipses.outerBullEllipse,
+            calibration.ellipses.outerDoubleEllipse,
+            orginalFrame.size());
+        const string refinementDetails =
+            "BULL_CENTER_REFINEMENT camera=" + to_string(cameraIdx) +
+            " status=" + (bullRefinement.accepted ? "ACCEPTED" : "REJECTED") +
+            " source=" + board_geometry::bullCenterSourceToString(bullRefinement.source) +
+            " coarse_x=" + to_string(calibration.bullCenter.x) +
+            " coarse_y=" + to_string(calibration.bullCenter.y) +
+            " candidate_x=" + to_string(bullRefinement.center.x) +
+            " candidate_y=" + to_string(bullRefinement.center.y) +
+            " displacement_px=" + to_string(bullRefinement.displacementPixels) +
+            " max_displacement_px=" + to_string(bullRefinement.maxDisplacementPixels) +
+            " inner_outer_distance_px=" + to_string(bullRefinement.innerOuterDistancePixels) +
+            " max_inner_outer_distance_px=" + to_string(bullRefinement.maxInnerOuterDistancePixels) +
+            " reason=" + bullRefinement.reason;
+
+        if (bullRefinement.accepted)
+        {
+            calibration.bullCenter = Point(
+                cvRound(bullRefinement.center.x),
+                cvRound(bullRefinement.center.y));
+
+            // Keep perspective diagnostics consistent with the center used by
+            // wire and orientation processing.
+            if (calibration.ellipses.hasValidDoubles)
+            {
+                calibration.ellipses.offsetX =
+                    calibration.ellipses.outerDoubleEllipse.center.x - calibration.bullCenter.x;
+                calibration.ellipses.offsetY =
+                    calibration.ellipses.outerDoubleEllipse.center.y - calibration.bullCenter.y;
+                calibration.ellipses.offsetMagnitude = norm(Point2f(
+                    calibration.ellipses.offsetX,
+                    calibration.ellipses.offsetY));
+                calibration.ellipses.offsetAngle = atan2(
+                    calibration.ellipses.offsetY,
+                    calibration.ellipses.offsetX) * 180.0 / CV_PI;
+            }
+            log_info(refinementDetails);
+        }
+        else
+        {
+            log_warning(refinementDetails);
+        }
 
         // [===STEP 8:===] Extract actual wire positions for segment alignment
         wire_processing::WireDetectionConfig wireConfig;
