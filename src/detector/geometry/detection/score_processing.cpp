@@ -1,5 +1,6 @@
 #include "score_processing.hpp"
 #include "ellipse_metrics.hpp"
+#include "score_consensus.hpp"
 #include "utils.hpp"
 #include "utils/streamer.hpp"
 #include "../calibration/geometry_calibration.hpp"
@@ -128,31 +129,24 @@ namespace score_processing
         return (rotated.x * rotated.x) / (a * a) + (rotated.y * rotated.y) / (b * b) <= 1.0f;
     }
 
-    // Clean, angle-based scoring function
-    string getScoreAtPoint(Point2f pixel, const DartboardCalibration &calib)
+    static Ring classifyRingAtPoint(Point2f pixel, const DartboardCalibration &calib)
     {
-        // Validation check
         if (!geometry_calibration::hasValidGeometry(calib))
         {
             log_debug("SCORE: Invalid calibration data");
-            return "MISS";
+            return Ring::MISS;
         }
 
-        Point2f center = Point2f(calib.bullCenter);
-
-        // 1. RING DETECTION - Check from inside out
-        bool in_inner_bull = isPointInEllipse(pixel, calib.ellipses.innerBullEllipse);
-        if (in_inner_bull)
+        if (isPointInEllipse(pixel, calib.ellipses.innerBullEllipse))
         {
             log_debug("SCORE: Point in INNER BULL");
-            return "BULL";
+            return Ring::INNER_BULL;
         }
 
-        bool in_outer_bull = isPointInEllipse(pixel, calib.ellipses.outerBullEllipse);
-        if (in_outer_bull)
+        if (isPointInEllipse(pixel, calib.ellipses.outerBullEllipse))
         {
             log_debug("SCORE: Point in OUTER BULL");
-            return "OUTER";
+            return Ring::OUTER_BULL;
         }
 
         bool in_inner_triple = isPointInEllipse(pixel, calib.ellipses.innerTripleEllipse);
@@ -165,36 +159,35 @@ namespace score_processing
                   " Inner_D:" + log_string(in_inner_double) +
                   " Outer_D:" + log_string(in_outer_double));
 
-        // Determine ring type with clear logic
-        string ring_prefix;
         if (in_outer_double && !in_inner_double)
         {
-            ring_prefix = "D"; // In the double ring (narrow band)
             log_debug("SCORE: Ring type = DOUBLE");
+            return Ring::DOUBLE;
         }
-        else if (in_outer_triple && !in_inner_triple)
+        if (in_outer_triple && !in_inner_triple)
         {
-            ring_prefix = "T"; // In the triple ring (narrow band)
             log_debug("SCORE: Ring type = TRIPLE");
+            return Ring::TRIPLE;
         }
-        else if (in_outer_double)
+        if (in_outer_double)
         {
-            ring_prefix = "S"; // Anywhere else inside the dartboard
             log_debug("SCORE: Ring type = SINGLE");
-        }
-        else
-        {
-            log_debug("SCORE: Point outside dartboard");
-            return "MISS";
+            return Ring::SINGLE;
         }
 
-        // 2. WEDGE DETECTION using angles
+        log_debug("SCORE: Point outside dartboard");
+        return Ring::MISS;
+    }
+
+    static int getWedgeAtPoint(Point2f pixel, const DartboardCalibration &calib)
+    {
         if (!geometry_calibration::hasValidOrientation(calib))
         {
             log_debug("SCORE: Invalid orientation data; refusing to guess a wedge");
-            return "MISS";
+            return -1;
         }
 
+        Point2f center = Point2f(calib.bullCenter);
         // Calculate angle from center to point
         Point2f direction = pixel - center;
         float point_angle = atan2(direction.y, direction.x);
@@ -242,12 +235,30 @@ namespace score_processing
                 log_debug("SCORE: Found wedge " + log_string(number) +
                           " (angle1=" + log_string(angle1 * 180.0f / CV_PI) +
                           ", angle2=" + log_string(angle2 * 180.0f / CV_PI) + ")");
-                return ring_prefix + to_string(number);
+                return number;
             }
         }
 
         log_debug("SCORE: No wedge found - this shouldn't happen");
-        return "MISS";
+        return -1;
+    }
+
+    static string getScoreForRingAtPoint(
+        Ring ring,
+        Point2f pixel,
+        const DartboardCalibration &calib)
+    {
+        if (ring == Ring::INNER_BULL)
+            return "BULL";
+        if (ring == Ring::OUTER_BULL)
+            return "OUTER";
+        if (!ringRequiresWedge(ring))
+            return "MISS";
+
+        const int wedge = getWedgeAtPoint(pixel, calib);
+        if (wedge < 0)
+            return "MISS";
+        return string(ringToString(ring)) + to_string(wedge);
     }
 
     ScoreResult processScore(const vector<Mat> &background_frames, const dart_processing::DartStateResult &dart_result, const vector<DartboardCalibration> &calibrations, bool debug_mode)
@@ -290,6 +301,7 @@ namespace score_processing
                 float nearest_wire_distance;
             };
             vector<CameraScoreCandidate> camera_scores;
+            vector<Ring> ring_observations;
             vector<Mat> points_on_screen;            // For debug images
 
             const size_t camera_count = min({dart_result.camera_results.size(), calibrations.size(), background_frames.size()});
@@ -303,18 +315,36 @@ namespace score_processing
                         dart_result.camera_results[i].tip_position,
                         calibrations[i]);
                 }
-                string score_test = getScoreAtPoint(dart_result.camera_results[i].tip_position, calibrations[i]);
+                Ring ring = Ring::MISS;
+                if (dart_result.camera_results[i].tip_found)
+                {
+                    ring = classifyRingAtPoint(
+                        dart_result.camera_results[i].tip_position,
+                        calibrations[i]);
+                    if (ring != Ring::MISS)
+                        ring_observations.push_back(ring);
+                }
+                string score_test = getScoreForRingAtPoint(
+                    ring,
+                    dart_result.camera_results[i].tip_position,
+                    calibrations[i]);
                 log_debug("-------");
 
                 // print image
                 if (debug_mode)
                 {
-                    log_warning("Camera " + to_string(i) + " score: " + score_test);
+                    const string display_score =
+                        score_test != "MISS" || !ringRequiresWedge(ring)
+                            ? score_test
+                            : string(ringToString(ring)) + "?";
+                    log_warning("Camera " + to_string(i) +
+                                " ring: " + ringToString(ring) +
+                                " score: " + score_test);
 
                     // just draw the point on the screen
                     Mat some_mat = background_frames[i].clone();
                     circle(some_mat, dart_result.camera_results[i].tip_position, 5, Scalar(0, 255, 0), -1);
-                    putText(some_mat, score_test, dart_result.camera_results[i].tip_position + Point2f(10, 10),
+                    putText(some_mat, display_score, dart_result.camera_results[i].tip_position + Point2f(10, 10),
                             FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0), 1);
                     system("mkdir -p debug_frames/score_processing");
                     imwrite("debug_frames/score_processing/point_on_screen" + to_string(i) + ".jpg", some_mat);
@@ -355,6 +385,7 @@ namespace score_processing
                 // Consensus scoring logic
                 string final_score;
                 int best_camera = -1;
+                float selected_confidence = 0.0f;
 
                 // Count occurrences of each score
                 map<string, vector<int>> score_cameras;
@@ -380,20 +411,48 @@ namespace score_processing
                     // Use consensus score, pick first camera from the group
                     final_score = consensus_score;
                     best_camera = score_cameras[consensus_score][0];
+                    selected_confidence = 0.9f;
                     log_info("Consensus score: " + final_score + " from " + to_string(max_consensus) + " cameras");
                 }
                 else
                 {
-                    // No consensus, use first available score
-                    final_score = camera_scores[0].score;
+                    const auto ring_consensus = selectRingConsensus(ring_observations);
+                    const string ring_adjusted_score = ring_consensus.valid
+                                                           ? applyRingConsensus(
+                                                                 ring_consensus.ring,
+                                                                 camera_scores[0].score)
+                                                           : "MISS";
+
                     best_camera = camera_scores[0].camera_index;
-                    log_info("No consensus, using single camera score: " + final_score + " from camera " + to_string(best_camera));
-                    const float confidence = board_geometry::singleCameraBoundaryConfidence(
-                        camera_scores[0].nearest_wire_distance);
-                    log_debug("SCORE_CONFIDENCE mode=SINGLE_CAMERA camera=" + to_string(best_camera) +
-                              " confidence=" + to_string(confidence) +
-                              " nearest_wire_distance_px=" + to_string(camera_scores[0].nearest_wire_distance) +
-                              " reason=no_second_ready_camera_agreement");
+                    if (ring_adjusted_score != "MISS")
+                    {
+                        final_score = ring_adjusted_score;
+                        selected_confidence = board_geometry::singleCameraBoundaryConfidence(
+                            camera_scores[0].nearest_wire_distance,
+                            0.85f);
+                        log_info("Ring consensus score: " + final_score +
+                                 " from " + to_string(ring_consensus.votes) +
+                                 " geometry cameras; wedge from camera " +
+                                 to_string(best_camera));
+                        log_debug("SCORE_CONFIDENCE mode=RING_CONSENSUS camera=" +
+                                  to_string(best_camera) +
+                                  " confidence=" + to_string(selected_confidence) +
+                                  " ring=" + ringToString(ring_consensus.ring) +
+                                  " ring_votes=" + to_string(ring_consensus.votes) +
+                                  " nearest_wedge_wire_distance_px=" +
+                                  to_string(camera_scores[0].nearest_wire_distance));
+                    }
+                    else
+                    {
+                        final_score = camera_scores[0].score;
+                        selected_confidence = board_geometry::singleCameraBoundaryConfidence(
+                            camera_scores[0].nearest_wire_distance);
+                        log_info("No consensus, using single camera score: " + final_score + " from camera " + to_string(best_camera));
+                        log_debug("SCORE_CONFIDENCE mode=SINGLE_CAMERA camera=" + to_string(best_camera) +
+                                  " confidence=" + to_string(selected_confidence) +
+                                  " nearest_wire_distance_px=" + to_string(camera_scores[0].nearest_wire_distance) +
+                                  " reason=no_second_ready_camera_agreement");
+                    }
                 }
 
                 result.score = final_score;
@@ -402,10 +461,7 @@ namespace score_processing
                 result.has_dartboard_position = normalizeDartboardPosition(result.pixel_position, calibrations[best_camera], result.dartboard_position);
                 if (!result.has_dartboard_position)
                     result.dartboard_position = Point2f(-1, -1);
-                result.confidence = consensus_score.empty()
-                                        ? board_geometry::singleCameraBoundaryConfidence(
-                                              camera_scores[0].nearest_wire_distance)
-                                        : 0.9f;
+                result.confidence = selected_confidence;
                 result.camera_index = best_camera;
                 result.valid = true;
             }

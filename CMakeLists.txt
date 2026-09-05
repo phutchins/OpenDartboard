@@ -156,4 +156,13 @@ if(BUILD_TESTING)
     target_link_libraries(dart_geometry_test PRIVATE ${OpenCV_LIBS})
     target_compile_features(dart_geometry_test PRIVATE cxx_std_17)
     add_test(NAME dart_geometry_test COMMAND dart_geometry_test)
+
+    add_executable(score_consensus_test
+        tests/score_consensus_test.cpp
+    )
+    target_include_directories(score_consensus_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_features(score_consensus_test PRIVATE cxx_std_17)
+    add_test(NAME score_consensus_test COMMAND score_consensus_test)
 endif()
