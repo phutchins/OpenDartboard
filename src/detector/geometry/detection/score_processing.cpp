@@ -1,4 +1,5 @@
 #include "score_processing.hpp"
+#include "dart_geometry.hpp"
 #include "ellipse_metrics.hpp"
 #include "score_consensus.hpp"
 #include "utils.hpp"
@@ -474,15 +475,25 @@ namespace score_processing
             }
             else
             {
-                // State changed but no valid scores found
-                result.score = "MISS";
-                result.confidence = 0.5f;
-                result.camera_index = -1;
-                result.valid = true;
-
-                if (debug_mode)
+                const size_t cameras_with_tips = count_if(
+                    dart_result.camera_results.begin(),
+                    dart_result.camera_results.end(),
+                    [](const dart_processing::CameraDetectionResult &camera) {
+                        return camera.tip_found;
+                    });
+                if (dart_geometry::hasSufficientMissEvidence(cameras_with_tips))
                 {
-                    log_warning("State changed but no valid scores found!");
+                    result.score = "MISS";
+                    result.confidence = 0.5f;
+                    result.camera_index = -1;
+                    result.valid = true;
+                    if (debug_mode)
+                        log_warning("State changed with multi-camera tip evidence but no in-board score; reporting MISS");
+                }
+                else if (debug_mode)
+                {
+                    log_warning("SCORE_EVENT_REJECTED reason=insufficient_miss_evidence cameras_with_tips=" +
+                                to_string(cameras_with_tips));
                 }
             }
             break;

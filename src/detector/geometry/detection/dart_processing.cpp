@@ -9,6 +9,27 @@ using namespace std;
 
 namespace dart_processing
 {
+    namespace
+    {
+        void restrictToBoardRegion(
+            Mat &mask,
+            const DartboardCalibration *calibration,
+            double scale)
+        {
+            if (mask.empty() || calibration == nullptr ||
+                !calibration->ellipses.hasValidDoubles ||
+                !std::isfinite(scale) || scale <= 0.0)
+                return;
+
+            RotatedRect boardRegion = calibration->ellipses.outerDoubleEllipse;
+            boardRegion.size.width *= static_cast<float>(scale);
+            boardRegion.size.height *= static_cast<float>(scale);
+            Mat boardMask = Mat::zeros(mask.size(), CV_8UC1);
+            ellipse(boardMask, boardRegion, Scalar(255), FILLED);
+            bitwise_and(mask, boardMask, mask);
+        }
+    }
+
     // Static state tracking
     static vector<DartBoardState> previous_states = {
         DartBoardState::CLEAN,
@@ -380,6 +401,10 @@ namespace dart_processing
             morphologyEx(thresh, thresh, MORPH_CLOSE, morph_kernel2); // Close smaller gaps in darts
             morphologyEx(thresh, thresh, MORPH_OPEN, morph_kernel2);  // Open smaller noise
 
+            const DartboardCalibration *calibration =
+                i < calibrations.size() ? &calibrations[i] : nullptr;
+            restrictToBoardRegion(thresh, calibration, params.board_roi_scale);
+
             // Count total changed pixels instead of contour analysis
             int total_changed_pixels = countNonZero(thresh);
             int total_pixels = thresh.rows * thresh.cols;
@@ -444,6 +469,7 @@ namespace dart_processing
                     morphologyEx(single_thresh, single_thresh, MORPH_OPEN, morph_kernel);   // Open small noise
                     morphologyEx(single_thresh, single_thresh, MORPH_CLOSE, morph_kernel2); // Close smaller gaps in darts
                     morphologyEx(single_thresh, single_thresh, MORPH_OPEN, morph_kernel2);  // Open smaller noise
+                    restrictToBoardRegion(single_thresh, calibration, params.board_roi_scale);
                 }
                 else
                 {
@@ -454,8 +480,6 @@ namespace dart_processing
                 working_backgrounds[i] = averaged_frame.clone();
 
                 // Use smart tip detection
-                const DartboardCalibration *calibration =
-                    i < calibrations.size() ? &calibrations[i] : nullptr;
                 auto tip_and_center = detectTipAndCenter(
                     single_thresh, calibration, debug_mode, static_cast<int>(i), dart_tips);
                 Point2f tip_pos = tip_and_center.first;
@@ -543,6 +567,8 @@ namespace dart_processing
         int moves_up = 0;
         int goes_clean = 0;
         int stays_same = 0;
+        size_t cameras_with_tips = 0;
+        bool oriented_tip_inside_scoring_area = false;
 
         // Loop through all cameras once
         for (size_t i = 0; i < result.camera_results.size(); i++)
@@ -559,6 +585,21 @@ namespace dart_processing
             {
                 stays_same++;
             }
+
+            if (result.camera_results[i].tip_found)
+            {
+                cameras_with_tips++;
+                if (i < calibrations.size() &&
+                    geometry_calibration::hasValidOrientation(calibrations[i]) &&
+                    dart_geometry::isPlausibleBoardPoint(
+                        result.camera_results[i].tip_position,
+                        Point2f(calibrations[i].bullCenter),
+                        calibrations[i].ellipses.outerDoubleEllipse,
+                        1.0f))
+                {
+                    oriented_tip_inside_scoring_area = true;
+                }
+            }
         }
 
         // Pick the winner
@@ -567,7 +608,10 @@ namespace dart_processing
         {
             final_state = DartBoardState::CLEAN; // Rule 3: 2+ think CLEAN
         }
-        else if (moves_up >= 2)
+        else if (moves_up >= 2 &&
+                 dart_geometry::hasSufficientDartEvidence(
+                     cameras_with_tips,
+                     oriented_tip_inside_scoring_area))
         {
             final_state = static_cast<DartBoardState>(static_cast<int>(best_previous_state) + 1); // Rule 1: 2+ move up
         }
@@ -580,6 +624,13 @@ namespace dart_processing
         string a = getDartBoardStateName(best_previous_state);
         string b = getDartBoardStateName(final_state);
         log_debug("FINAL State: From: " + a + " -> " + b);
+        if (moves_up >= 2 && final_state == best_previous_state)
+        {
+            log_warning("DART_STATE_REJECTED reason=insufficient_tip_evidence cameras_with_tips=" +
+                        to_string(cameras_with_tips) +
+                        " oriented_tip_inside_scoring_area=" +
+                        (oriented_tip_inside_scoring_area ? "true" : "false"));
+        }
 
         // Set ALL cameras to the final state
         for (size_t i = 0; i < previous_states.size(); i++)

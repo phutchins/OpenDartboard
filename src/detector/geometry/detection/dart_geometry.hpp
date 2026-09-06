@@ -73,4 +73,22 @@ namespace dart_geometry
             (rotated.y * rotated.y) / (radiusY * radiusY));
         return std::isfinite(normalizedRadius) && normalizedRadius <= maximumNormalizedRadius;
     }
+
+    // State changes need evidence that a dart actually remained on the board.
+    // Two camera tips are sufficient for any throw, including a miss. A single
+    // tip is sufficient only when it came from the orientation-ready camera
+    // and lies inside the scoring area, where it can produce a numbered score.
+    inline bool hasSufficientDartEvidence(
+        size_t camerasWithTips,
+        bool orientedTipInsideScoringArea)
+    {
+        return camerasWithTips >= 2 || orientedTipInsideScoringArea;
+    }
+
+    // A miss has no ring/wedge evidence, so require two independent camera
+    // tips before consuming one of the three darts in a visit.
+    inline bool hasSufficientMissEvidence(size_t camerasWithTips)
+    {
+        return camerasWithTips >= 2;
+    }
 }

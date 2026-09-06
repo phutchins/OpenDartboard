@@ -34,6 +34,10 @@ namespace dart_processing
         // Simple morphological operations
         int morph_kernel_size = 4; // Size of morphological kernel
 
+        // Ignore exposure and room-light changes outside the physical board
+        // surround when determining how many darts remain on the board.
+        double board_roi_scale = 1.45; // Relative to the outer double ellipse
+
         // Statbility frames
         int stability_frames = 6; // Frames needed to confirm state change / (3 cameras * 2 frames per camera)
     };
