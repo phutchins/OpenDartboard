@@ -24,7 +24,10 @@ namespace cache
         // @IMPORTANT -----------
 
         static const uint32_t MAGIC = 0x42554C4C; // "BULL" in ASCII
-        static const uint32_t VERSION = 1;
+        // Version 2 adds WireData::hasInferredEndpoints. Calibration structs
+        // are serialized as fixed-layout binary data, so the cache version
+        // must change whenever that layout changes.
+        static const uint32_t VERSION = 2;
 
         struct FileHeader
         {

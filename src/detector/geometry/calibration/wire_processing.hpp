@@ -33,6 +33,7 @@ namespace wire_processing
         std::array<Point2f, 20> wireEndpoints;
         int camera_index = -1;
         bool isValid = false;
+        bool hasInferredEndpoints = false;
     };
 
     // Public interfaces - using global DartboardCalibration

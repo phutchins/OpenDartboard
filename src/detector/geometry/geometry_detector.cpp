@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "geometry_detector.hpp"
+#include "calibration/dartboard_visualization.hpp"
 #include "calibration/geometry_calibration.hpp"
 #include "detection/dart_processing.hpp"
 #include "detection/score_processing.hpp"
@@ -18,6 +19,59 @@ using json = nlohmann::json;
 
 namespace
 {
+    constexpr int calibration_capture_attempts = 3;
+
+    int calibrationStatusRank(const DartboardCalibration &calibration)
+    {
+        switch (geometry_calibration::getCalibrationStatus(calibration))
+        {
+        case CalibrationStatus::READY:
+            return 2;
+        case CalibrationStatus::DEGRADED:
+            return 1;
+        case CalibrationStatus::INVALID:
+        default:
+            return 0;
+        }
+    }
+
+    bool hasUsableCalibrationForEveryCamera(
+        const vector<DartboardCalibration> &calibrations,
+        size_t camera_count)
+    {
+        if (calibrations.size() != camera_count || camera_count == 0)
+            return false;
+
+        bool any_ready = false;
+        for (const auto &calibration : calibrations)
+        {
+            const CalibrationStatus status = geometry_calibration::getCalibrationStatus(calibration);
+            if (status == CalibrationStatus::INVALID)
+                return false;
+            any_ready = any_ready || status == CalibrationStatus::READY;
+        }
+        return any_ready;
+    }
+
+    void saveSelectedCalibrationVisualizations(
+        const vector<Mat> &frames,
+        const vector<DartboardCalibration> &calibrations)
+    {
+        filesystem::create_directories("debug_frames/geometry_calibration");
+        const size_t camera_count = min(frames.size(), calibrations.size());
+        for (size_t camera_index = 0; camera_index < camera_count; ++camera_index)
+        {
+            if (frames[camera_index].empty())
+                continue;
+            const Mat visualization = dartboard_visualization::drawCalibrationOverlay(
+                frames[camera_index], calibrations[camera_index], true);
+            imwrite(
+                "debug_frames/geometry_calibration/calibration_camera_" +
+                    to_string(camera_index) + ".jpg",
+                visualization);
+        }
+    }
+
     uint64_t diagnostic_event_sequence = 0;
 
     json pointJson(const Point2f &point)
@@ -274,17 +328,67 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
     }
 
     log_info("Capturing frames for calibration...");
-    vector<Mat> initial_frames = camera::captureAndAverageFrames(cameras, 30); // Capture 75 frames for averaging
+    vector<Mat> initial_frames;
+    vector<DartboardCalibration> best_calibrations(cameras.size());
+    vector<Mat> best_frames(cameras.size());
 
-    if (!initial_frames.empty())
+    for (int attempt = 1; attempt <= calibration_capture_attempts; ++attempt)
     {
-        log_info("Performing immediate calibration...");
+        log_info("CALIBRATION_ATTEMPT attempt=" + to_string(attempt) +
+                 " max_attempts=" + to_string(calibration_capture_attempts));
+        vector<Mat> attempt_frames = camera::captureAndAverageFrames(cameras, 30);
+        if (attempt_frames.empty())
+        {
+            log_warning("CALIBRATION_ATTEMPT_RESULT attempt=" + to_string(attempt) +
+                        " status=no_frames");
+            continue;
+        }
 
-        calibrations = geometry_calibration::calibrateMultipleCameras(
-            initial_frames,
+        initial_frames = attempt_frames;
+        vector<DartboardCalibration> attempt_calibrations = geometry_calibration::calibrateMultipleCameras(
+            attempt_frames,
             debug_mode,
             target_width,
             target_height);
+
+        for (const auto &candidate : attempt_calibrations)
+        {
+            if (candidate.camera_index < 0 ||
+                static_cast<size_t>(candidate.camera_index) >= best_calibrations.size())
+                continue;
+
+            const size_t camera_index = static_cast<size_t>(candidate.camera_index);
+            if (best_calibrations[camera_index].camera_index < 0 ||
+                calibrationStatusRank(candidate) > calibrationStatusRank(best_calibrations[camera_index]))
+            {
+                best_calibrations[camera_index] = candidate;
+                if (camera_index < attempt_frames.size())
+                    best_frames[camera_index] = attempt_frames[camera_index].clone();
+                log_info("CALIBRATION_SELECTED camera=" + to_string(camera_index) +
+                         " attempt=" + to_string(attempt) +
+                         " status=" + geometry_calibration::calibrationStatusToString(
+                             geometry_calibration::getCalibrationStatus(candidate)));
+            }
+        }
+
+        if (hasUsableCalibrationForEveryCamera(best_calibrations, cameras.size()))
+        {
+            log_info("CALIBRATION_ATTEMPTS_COMPLETE reason=all_cameras_usable");
+            break;
+        }
+    }
+
+    calibrations = best_calibrations;
+    for (size_t camera_index = 0; camera_index < best_frames.size(); ++camera_index)
+    {
+        if (best_frames[camera_index].empty() && camera_index < initial_frames.size())
+            best_frames[camera_index] = initial_frames[camera_index].clone();
+    }
+
+    if (!initial_frames.empty())
+    {
+        if (debug_mode)
+            saveSelectedCalibrationVisualizations(best_frames, calibrations);
 
         int ready_calibrations = 0;
         int degraded_calibrations = 0;
@@ -311,7 +415,7 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
         {
             // Save frames as background (for dart detection)
             background_frames.clear();
-            for (const auto &frame : initial_frames)
+            for (const auto &frame : best_frames)
                 background_frames.push_back(frame.clone());
 
             if (ready_calibrations == static_cast<int>(calibrations.size()))

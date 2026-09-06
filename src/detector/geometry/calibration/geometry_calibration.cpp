@@ -41,7 +41,8 @@ namespace geometry_calibration
         const auto &orientation = calibration.orientation;
         const int wire_count = static_cast<int>(calibration.wires.wireEndpoints.size());
 
-        return orientation.cameraPosition != orientation_processing::CameraPosition::UNKNOWN &&
+        return !calibration.wires.hasInferredEndpoints &&
+               orientation.cameraPosition != orientation_processing::CameraPosition::UNKNOWN &&
                orientation.southWireIndex >= 0 && orientation.southWireIndex < wire_count &&
                orientation.wedge20WireIndex >= 0 && orientation.wedge20WireIndex < wire_count &&
                orientation.wedgeNumber > 0;

@@ -59,6 +59,61 @@ int main()
                            .valid,
                       "duplicate and missing boundaries must fail validation");
 
+    std::vector<cv::Point2f> splitWireCandidates = wires;
+    splitWireCandidates[7] = pointAtNormalizedAngle(4.0f + 7.0f * 18.0f - 5.0f, center, obliqueEllipse);
+    splitWireCandidates.push_back(pointAtNormalizedAngle(4.0f + 7.0f * 18.0f + 5.0f, center, obliqueEllipse));
+    const auto recoveredSplitWire = board_geometry::recoverWireLattice(
+        splitWireCandidates, center, obliqueEllipse);
+    passed &= require(recoveredSplitWire.recovered && recoveredSplitWire.wires.size() == 20,
+                      "a split boundary with all 20 observed slots must recover");
+    passed &= require(board_geometry::validateWireSpacing(
+                           recoveredSplitWire.wires, center, obliqueEllipse)
+                           .valid,
+                      "recovered boundary candidates must pass independent spacing validation");
+
+    std::vector<cv::Point2f> missingSlotCandidates = wires;
+    missingSlotCandidates.erase(missingSlotCandidates.begin() + 7);
+    missingSlotCandidates.push_back(pointAtNormalizedAngle(4.0f + 2.0f * 18.0f + 4.5f, center, obliqueEllipse));
+    missingSlotCandidates.push_back(pointAtNormalizedAngle(4.0f + 12.0f * 18.0f - 4.5f, center, obliqueEllipse));
+    passed &= require(!board_geometry::recoverWireLattice(
+                           missingSlotCandidates, center, obliqueEllipse)
+                           .recovered,
+                      "lattice recovery must reject a genuinely unobserved wire slot");
+
+    const auto inferredMissingSlot = board_geometry::recoverWireLattice(
+        missingSlotCandidates,
+        center,
+        obliqueEllipse,
+        20,
+        4,
+        6.0f,
+        17,
+        4.5f);
+    passed &= require(inferredMissingSlot.recovered && inferredMissingSlot.inferredSlots == 1,
+                      "ring-only recovery may explicitly infer one unsupported lattice slot");
+    passed &= require(board_geometry::validateWireSpacing(
+                           inferredMissingSlot.wires, center, obliqueEllipse)
+                           .valid,
+                      "ring-only inferred lattice must still pass spacing validation");
+
+    std::vector<cv::Point2f> insufficientCandidates(
+        wires.begin(), wires.begin() + 16);
+    insufficientCandidates.insert(
+        insufficientCandidates.end(),
+        duplicatedCandidates.begin(),
+        duplicatedCandidates.begin() + 6);
+    passed &= require(!board_geometry::recoverWireLattice(
+                           insufficientCandidates,
+                           center,
+                           obliqueEllipse,
+                           20,
+                           4,
+                           6.0f,
+                           17,
+                           4.5f)
+                           .recovered,
+                      "ring-only recovery must reject fewer than 17 supported slots");
+
     std::vector<cv::Point2f> cameraTwoLikeWires;
     float accumulatedAngle = 0.0f;
     cameraTwoLikeWires.push_back(pointAtNormalizedAngle(accumulatedAngle, center, obliqueEllipse));

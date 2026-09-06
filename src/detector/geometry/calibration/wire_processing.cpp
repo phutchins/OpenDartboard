@@ -632,6 +632,55 @@ namespace wire_processing
                   " rms_gap_error_deg=" + to_string(wireDiagnostics.rmsGapErrorDegrees) +
                   " valid=" + (wireDiagnostics.valid ? "true" : "false"));
 
+        // The ensemble can occasionally split a real boundary into two groups,
+        // especially along the highly compressed axis of an oblique camera.
+        // First try the strict path, which requires all 20 slots to be observed.
+        if (!wireDiagnostics.valid && colorWires.size() > expected_wire_count)
+        {
+            auto recovery = board_geometry::recoverWireLattice(
+                colorWires,
+                Point2f(calib.bullCenter),
+                calib.ellipses.outerDoubleEllipse,
+                expected_wire_count);
+            if (!recovery.recovered)
+            {
+                // A highly oblique camera can hide one to three boundaries
+                // while still supplying strong support for the fixed 20-wire
+                // dartboard lattice. Fill only those missing endpoints and
+                // keep this camera ring-only; inferred boundaries are never
+                // trusted to establish wedge orientation.
+                recovery = board_geometry::recoverWireLattice(
+                    colorWires,
+                    Point2f(calib.bullCenter),
+                    calib.ellipses.outerDoubleEllipse,
+                    expected_wire_count,
+                    4,
+                    6.0f,
+                    17,
+                    4.5f);
+            }
+            log_debug("WIRE_LATTICE_RECOVERY camera=" + to_string(calib.camera_index) +
+                      " candidates=" + to_string(colorWires.size()) +
+                      " supported_slots=" + to_string(recovery.supportedSlots) +
+                      " inferred_slots=" + to_string(recovery.inferredSlots) +
+                      " phase_deg=" + to_string(recovery.phaseDegrees) +
+                      " rms_residual_deg=" + to_string(recovery.rmsResidualDegrees) +
+                      " valid=" + (recovery.recovered ? "true" : "false"));
+            if (recovery.recovered)
+            {
+                colorWires = recovery.wires;
+                wireDiagnostics = board_geometry::validateWireSpacing(
+                    colorWires,
+                    Point2f(calib.bullCenter),
+                    calib.ellipses.outerDoubleEllipse,
+                    expected_wire_count);
+                result.hasInferredEndpoints = recovery.inferredSlots > 0;
+                selectedSource = result.hasInferredEndpoints
+                                     ? "ensemble_lattice_inference"
+                                     : "ensemble_lattice_recovery";
+            }
+        }
+
         // A contour-only result is a safe fallback only when it contains all
         // 20 boundaries and independently passes the normalized spacing test.
         // Merely returning 20 contour endpoints is not sufficient.
@@ -678,7 +727,8 @@ namespace wire_processing
         log_debug("WIRE_DETECTION_STATUS camera=" + to_string(calib.camera_index) +
                   " status=VALID source=" + selectedSource +
                   " detected=" + to_string(colorWires.size()) +
-                  " expected=" + to_string(expected_wire_count));
+                  " expected=" + to_string(expected_wire_count) +
+                  " inferred=" + (result.hasInferredEndpoints ? "true" : "false"));
 
         // Handle debug output internally
         if (enableDebug)

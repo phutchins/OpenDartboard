@@ -334,6 +334,145 @@ namespace board_geometry
         return result;
     }
 
+    struct WireLatticeRecovery
+    {
+        bool recovered = false;
+        std::vector<cv::Point2f> wires;
+        size_t supportedSlots = 0;
+        size_t inferredSlots = 0;
+        float phaseDegrees = 0.0f;
+        float rmsResidualDegrees = 0.0f;
+    };
+
+    // Recover a complete dartboard lattice when otherwise-good detectors split
+    // one or more physical wires into nearby angular groups. This never invents
+    // a missing wire by default: every one of the 20 lattice slots must have an
+    // observed candidate within the residual bound. A caller may explicitly
+    // lower minSupportedSlots for a ring-only calibration; inferred slots are
+    // reported so that orientation scoring can remain disabled.
+    inline WireLatticeRecovery recoverWireLattice(
+        const std::vector<cv::Point2f> &candidates,
+        const cv::Point2f &center,
+        const cv::RotatedRect &ellipse,
+        size_t expectedCount = 20,
+        size_t maxExtraCandidates = 4,
+        float maxResidualDegrees = 6.0f,
+        size_t minSupportedSlots = 20,
+        float maxRmsResidualDegrees = 4.5f)
+    {
+        WireLatticeRecovery result;
+        if (expectedCount < 2 || candidates.size() <= expectedCount ||
+            candidates.size() > expectedCount + maxExtraCandidates ||
+            minSupportedSlots > expectedCount || minSupportedSlots < 2 ||
+            !std::isfinite(maxResidualDegrees) || maxResidualDegrees <= 0.0f ||
+            !std::isfinite(maxRmsResidualDegrees) || maxRmsResidualDegrees <= 0.0f)
+        {
+            return result;
+        }
+
+        struct AngularCandidate
+        {
+            cv::Point2f point;
+            float angle;
+        };
+
+        std::vector<AngularCandidate> angularCandidates;
+        angularCandidates.reserve(candidates.size());
+        for (const auto &candidate : candidates)
+        {
+            const cv::Point2f normalized = normalizeVector(candidate - center, ellipse);
+            if (!std::isfinite(normalized.x) || !std::isfinite(normalized.y) || cv::norm(normalized) <= 0.0f)
+                continue;
+            angularCandidates.push_back({candidate, angleDegrees(normalized)});
+        }
+        if (angularCandidates.size() != candidates.size())
+            return result;
+
+        const float stepDegrees = 360.0f / static_cast<float>(expectedCount);
+        constexpr float phaseIncrementDegrees = 0.1f;
+        size_t bestCoverage = 0;
+        float bestSquaredResidual = std::numeric_limits<float>::infinity();
+        float bestPhase = 0.0f;
+        std::vector<int> bestCandidateBySlot;
+
+        for (float phase = 0.0f; phase < stepDegrees; phase += phaseIncrementDegrees)
+        {
+            std::vector<float> residualBySlot(expectedCount, std::numeric_limits<float>::infinity());
+            std::vector<int> candidateBySlot(expectedCount, -1);
+
+            for (size_t candidateIndex = 0; candidateIndex < angularCandidates.size(); ++candidateIndex)
+            {
+                const float relative = (angularCandidates[candidateIndex].angle - phase) / stepDegrees;
+                int slot = static_cast<int>(std::lround(relative)) % static_cast<int>(expectedCount);
+                if (slot < 0)
+                    slot += static_cast<int>(expectedCount);
+                float targetAngle = phase + static_cast<float>(slot) * stepDegrees;
+                if (targetAngle >= 360.0f)
+                    targetAngle -= 360.0f;
+                const float residual = circularAngleDifference(angularCandidates[candidateIndex].angle, targetAngle);
+                if (residual <= maxResidualDegrees && residual < residualBySlot[slot])
+                {
+                    residualBySlot[slot] = residual;
+                    candidateBySlot[slot] = static_cast<int>(candidateIndex);
+                }
+            }
+
+            size_t coverage = 0;
+            float squaredResidual = 0.0f;
+            for (size_t slot = 0; slot < expectedCount; ++slot)
+            {
+                if (candidateBySlot[slot] < 0)
+                    continue;
+                coverage++;
+                squaredResidual += residualBySlot[slot] * residualBySlot[slot];
+            }
+
+            if (coverage > bestCoverage ||
+                (coverage == bestCoverage && squaredResidual < bestSquaredResidual))
+            {
+                bestCoverage = coverage;
+                bestSquaredResidual = squaredResidual;
+                bestPhase = phase;
+                bestCandidateBySlot = candidateBySlot;
+            }
+        }
+
+        result.supportedSlots = bestCoverage;
+        result.phaseDegrees = bestPhase;
+        if (bestCoverage > 0 && std::isfinite(bestSquaredResidual))
+            result.rmsResidualDegrees = std::sqrt(bestSquaredResidual / static_cast<float>(bestCoverage));
+        result.inferredSlots = expectedCount - std::min(bestCoverage, expectedCount);
+        if (bestCoverage < minSupportedSlots ||
+            result.rmsResidualDegrees > maxRmsResidualDegrees ||
+            bestCandidateBySlot.size() != expectedCount)
+            return result;
+
+        result.wires.reserve(expectedCount);
+        for (size_t slot = 0; slot < expectedCount; ++slot)
+        {
+            const int candidateIndex = bestCandidateBySlot[slot];
+            if (candidateIndex < 0)
+            {
+                const float angleRadians =
+                    (bestPhase + static_cast<float>(slot) * stepDegrees) *
+                    static_cast<float>(CV_PI) / 180.0f;
+                result.wires.push_back(center + denormalizeVector(
+                                                    cv::Point2f(
+                                                        std::cos(angleRadians),
+                                                        std::sin(angleRadians)),
+                                                    ellipse));
+                continue;
+            }
+            result.wires.push_back(angularCandidates[static_cast<size_t>(candidateIndex)].point);
+        }
+
+        const auto spacing = validateWireSpacing(result.wires, center, ellipse, expectedCount);
+        result.recovered = spacing.valid;
+        if (!result.recovered)
+            result.wires.clear();
+        return result;
+    }
+
     enum class ClipLayout
     {
         UNKNOWN,
