@@ -6,9 +6,52 @@
 #include <mutex>
 #include <sstream>
 #include <iomanip>
+#include <filesystem>
+#include <fstream>
+#include <regex>
 
 using namespace std;
 using json = nlohmann::json;
+
+namespace
+{
+    bool isSafeDiagnosticEventId(const string &event_id)
+    {
+        static const regex safe_event_id("^[A-Za-z0-9_-]+$");
+        return regex_match(event_id, safe_event_id);
+    }
+
+    bool isValidDartScore(const string &score)
+    {
+        static const regex dart_score("^(MISS|BULL|OUTER|[SDT]([1-9]|1[0-9]|20))$");
+        return regex_match(score, dart_score);
+    }
+
+    bool readJsonFile(const filesystem::path &path, json &value)
+    {
+        ifstream input(path);
+        if (!input)
+            return false;
+        try
+        {
+            input >> value;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    bool writeJsonFile(const filesystem::path &path, const json &value)
+    {
+        ofstream output(path);
+        if (!output)
+            return false;
+        output << value.dump(2) << endl;
+        return output.good();
+    }
+}
 
 // Proper SHA1 implementation for WebSocket handshake
 class SHA1
@@ -302,6 +345,9 @@ void WebSocketService::run()
                                       {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
                                       {"Access-Control-Allow-Headers", "Content-Type"}});
 
+        server_->Options(R"(/.*)", [](const httplib::Request &, httplib::Response &res)
+                         { res.status = 204; });
+
         // WebSocket endpoint with REAL streaming
         server_->Get("/scores", [&](const httplib::Request &req, httplib::Response &res)
                      {
@@ -418,18 +464,108 @@ void WebSocketService::run()
             status["todo"] = "yes";
             res.set_content(status.dump(), "application/json"); });
 
+        server_->Get("/debug/events", [](const httplib::Request &req, httplib::Response &res)
+                     {
+            json events = json::array();
+            const filesystem::path events_directory = filesystem::path("debug_frames") / "events";
+            if (!filesystem::exists(events_directory)) {
+                res.set_content(events.dump(), "application/json");
+                return;
+            }
+
+            vector<filesystem::path> event_directories;
+            for (const auto &entry : filesystem::directory_iterator(events_directory)) {
+                if (entry.is_directory())
+                    event_directories.push_back(entry.path());
+            }
+            sort(event_directories.begin(), event_directories.end(), greater<filesystem::path>());
+
+            size_t limit = 100;
+            if (req.has_param("limit")) {
+                try {
+                    limit = std::min<size_t>(1000, std::max<size_t>(1, stoul(req.get_param_value("limit"))));
+                } catch (...) {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"limit must be a positive integer\"}", "application/json");
+                    return;
+                }
+            }
+
+            for (const auto &event_directory : event_directories) {
+                if (events.size() >= limit)
+                    break;
+                json manifest;
+                if (readJsonFile(event_directory / "manifest.json", manifest))
+                    events.push_back(manifest);
+            }
+            res.set_content(events.dump(), "application/json"); });
+
+        server_->Post(R"(/debug/events/([A-Za-z0-9_-]+)/label)", [](const httplib::Request &req, httplib::Response &res)
+                      {
+            const string event_id = req.matches[1].str();
+            if (!isSafeDiagnosticEventId(event_id)) {
+                res.status = 400;
+                res.set_content("{\"error\":\"invalid event id\"}", "application/json");
+                return;
+            }
+
+            const filesystem::path event_directory = filesystem::path("debug_frames") / "events" / event_id;
+            const filesystem::path manifest_path = event_directory / "manifest.json";
+            json manifest;
+            if (!readJsonFile(manifest_path, manifest)) {
+                res.status = 404;
+                res.set_content("{\"error\":\"diagnostic event not found\"}", "application/json");
+                return;
+            }
+
+            try {
+                const json request = json::parse(req.body);
+                string actual_score = request.value("actual_score", "");
+                transform(actual_score.begin(), actual_score.end(), actual_score.begin(), ::toupper);
+                if (!isValidDartScore(actual_score)) {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"actual_score must be MISS, BULL, OUTER, or S/D/T plus 1-20\"}", "application/json");
+                    return;
+                }
+
+                json label = {
+                    {"actual_score", actual_score},
+                    {"reported_at_epoch_ms", chrono::duration_cast<chrono::milliseconds>(
+                        chrono::system_clock::now().time_since_epoch()).count()}};
+                const string note = request.value("note", "");
+                if (!note.empty())
+                    label["note"] = note.substr(0, 500);
+
+                manifest["ground_truth"] = label;
+                if (!writeJsonFile(manifest_path, manifest) ||
+                    !writeJsonFile(event_directory / "label.json", label)) {
+                    res.status = 500;
+                    res.set_content("{\"error\":\"could not save label\"}", "application/json");
+                    return;
+                }
+
+                log_info("DIAGNOSTIC_LABEL id=" + event_id + " actual_score=" + actual_score);
+                res.set_content(json({{"status", "saved"}, {"event_id", event_id}, {"actual_score", actual_score}}).dump(), "application/json");
+            } catch (const exception &error) {
+                res.status = 400;
+                res.set_content(json({{"error", string("invalid JSON: ") + error.what()}}).dump(), "application/json");
+            } });
+
         server_->Get("/debug/list", [](const httplib::Request &req, httplib::Response &res)
                      {
             json files = json::array();
             
             for (const auto& entry : filesystem::recursive_directory_iterator("debug_frames")) {
+                const string path = entry.path().string();
+                if (path.rfind("debug_frames/events/", 0) == 0)
+                    continue;
                 if (entry.is_regular_file() && entry.path().extension() == ".jpg") {
-                    string path = entry.path().string();
+                    string relative_path = path;
                     // Remove debug_frames/ prefix - C++17 compatible
-                    if (path.substr(0, 13) == "debug_frames/") {
-                        path = path.substr(13);
+                    if (relative_path.substr(0, 13) == "debug_frames/") {
+                        relative_path = relative_path.substr(13);
                     }
-                    files.push_back(path);
+                    files.push_back(relative_path);
                 }
             }
             
@@ -564,6 +700,7 @@ string WebSocketService::formatScoreJson(const DetectorResult &result)
 {
     json j;
     j["score"] = result.score;
+    j["event_id"] = result.event_id;
     j["position"] = {
         {"x", (int)result.position.x},
         {"y", (int)result.position.y}};
@@ -577,9 +714,11 @@ string WebSocketService::formatScoreJson(const DetectorResult &result)
     j["confidence"] = result.confidence;
     j["camera"] = result.camera_index;
     j["processing_time"] = result.processing_time_ms;
-    j["timestamp"] = chrono::duration_cast<chrono::milliseconds>(
-                         chrono::system_clock::now().time_since_epoch())
-                         .count();
+    j["timestamp"] = result.timestamp != 0
+                         ? result.timestamp
+                         : chrono::duration_cast<chrono::milliseconds>(
+                               chrono::system_clock::now().time_since_epoch())
+                               .count();
 
     return j.dump();
 }

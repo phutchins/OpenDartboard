@@ -328,6 +328,11 @@ namespace score_processing
                     ring,
                     dart_result.camera_results[i].tip_position,
                     calibrations[i]);
+                CameraScoreDiagnostic camera_diagnostic;
+                camera_diagnostic.camera_index = static_cast<int>(i);
+                camera_diagnostic.tip_found = dart_result.camera_results[i].tip_found;
+                camera_diagnostic.ring = ringToString(ring);
+                camera_diagnostic.score = score_test;
                 log_debug("-------");
 
                 // print image
@@ -363,9 +368,11 @@ namespace score_processing
                             calibrations[i].wires.wireEndpoints);
                     }
                     camera_scores.push_back({score_test, static_cast<int>(i), nearest_wire_distance});
+                    camera_diagnostic.nearest_wire_distance = nearest_wire_distance;
                     log_debug("SCORE_BOUNDARY_PROXIMITY camera=" + to_string(i) +
                               " distance_px=" + to_string(nearest_wire_distance));
                 }
+                result.camera_diagnostics.push_back(camera_diagnostic);
             }
 
             if (debug_mode)

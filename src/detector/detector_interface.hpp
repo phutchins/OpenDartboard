@@ -17,6 +17,7 @@ struct DetectorResult
     float confidence = 0.0f;
     int camera_index = -1;
     uint64_t timestamp = 0;
+    string event_id = ""; // Stable identifier for diagnostic capture and correction labels
 
     // Metadata for debugging/analysis
     bool motion_detected = false;

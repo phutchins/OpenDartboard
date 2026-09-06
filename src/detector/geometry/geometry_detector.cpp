@@ -1,5 +1,10 @@
 #include <iostream>
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 #include "geometry_detector.hpp"
 #include "calibration/geometry_calibration.hpp"
@@ -9,6 +14,171 @@
 
 using namespace cv;
 using namespace std;
+using json = nlohmann::json;
+
+namespace
+{
+    uint64_t diagnostic_event_sequence = 0;
+
+    json pointJson(const Point2f &point)
+    {
+        return {{"x", point.x}, {"y", point.y}};
+    }
+
+    string makeDiagnosticEventId(uint64_t timestamp)
+    {
+        return "event-" + to_string(timestamp) + "-" + to_string(++diagnostic_event_sequence);
+    }
+
+    void saveDiagnosticImage(
+        const filesystem::path &event_directory,
+        const string &filename,
+        const Mat &image,
+        json &files)
+    {
+        if (image.empty())
+            return;
+
+        const auto path = event_directory / filename;
+        if (imwrite(path.string(), image))
+            files.push_back(filename);
+    }
+
+    const score_processing::CameraScoreDiagnostic *findScoreDiagnostic(
+        const score_processing::ScoreResult &score_result,
+        int camera_index)
+    {
+        for (const auto &diagnostic : score_result.camera_diagnostics)
+        {
+            if (diagnostic.camera_index == camera_index)
+                return &diagnostic;
+        }
+        return nullptr;
+    }
+
+    void captureDiagnosticEvent(
+        const string &event_id,
+        uint64_t timestamp,
+        const vector<Mat> &current_frames,
+        const vector<Mat> &background_frames,
+        const dart_processing::DartStateResult &dart_result,
+        const score_processing::ScoreResult &score_result,
+        const vector<DartboardCalibration> &calibrations)
+    {
+        try
+        {
+            const filesystem::path event_directory = filesystem::path("debug_frames") / "events" / event_id;
+            filesystem::create_directories(event_directory);
+
+            json manifest;
+            manifest["schema_version"] = 1;
+            manifest["event_id"] = event_id;
+            manifest["captured_at_epoch_ms"] = timestamp;
+            manifest["ground_truth"] = nullptr;
+            manifest["state"] = {
+                {"previous", dart_processing::getDartBoardStateName(dart_result.previous_state)},
+                {"current", dart_processing::getDartBoardStateName(dart_result.current_state)}};
+            manifest["result"] = {
+                {"score", score_result.score},
+                {"confidence", score_result.confidence},
+                {"selected_camera", score_result.camera_index},
+                {"pixel_position", pointJson(score_result.pixel_position)},
+                {"has_board_position", score_result.has_dartboard_position}};
+            if (score_result.has_dartboard_position)
+                manifest["result"]["board_position"] = pointJson(score_result.dartboard_position);
+
+            manifest["cameras"] = json::array();
+            const size_t camera_count = std::max({
+                current_frames.size(),
+                background_frames.size(),
+                dart_result.camera_results.size(),
+                calibrations.size()});
+
+            for (size_t i = 0; i < camera_count; ++i)
+            {
+                json camera;
+                camera["camera_index"] = i;
+                camera["files"] = json::array();
+
+                if (i < dart_result.camera_results.size())
+                {
+                    const auto &detection = dart_result.camera_results[i];
+                    camera["state"] = dart_processing::getDartBoardStateName(detection.detected_state);
+                    camera["changed_pixels"] = detection.total_changed_pixels;
+                    camera["change_ratio_percent"] = detection.change_ratio;
+                    camera["tip_found"] = detection.tip_found;
+                    camera["tip"] = pointJson(detection.tip_position);
+                    camera["shape_center"] = pointJson(detection.center_position);
+                }
+
+                if (i < calibrations.size())
+                {
+                    const auto &calibration = calibrations[i];
+                    camera["calibration"] = {
+                        {"status", geometry_calibration::calibrationStatusToString(
+                                       geometry_calibration::getCalibrationStatus(calibration))},
+                        {"geometry_valid", geometry_calibration::hasValidGeometry(calibration)},
+                        {"orientation_valid", geometry_calibration::hasValidOrientation(calibration)},
+                        {"camera_position", orientation_processing::cameraPositionToString(
+                                                calibration.orientation.cameraPosition)},
+                        {"bull_center", pointJson(Point2f(calibration.bullCenter))}};
+                }
+
+                const auto *score_diagnostic = findScoreDiagnostic(score_result, static_cast<int>(i));
+                if (score_diagnostic != nullptr)
+                {
+                    camera["classification"] = {
+                        {"ring", score_diagnostic->ring},
+                        {"score", score_diagnostic->score}};
+                    if (isfinite(score_diagnostic->nearest_wire_distance))
+                        camera["classification"]["nearest_wire_distance_px"] = score_diagnostic->nearest_wire_distance;
+                    else
+                        camera["classification"]["nearest_wire_distance_px"] = nullptr;
+                }
+
+                if (i < background_frames.size())
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_background.jpg", background_frames[i], camera["files"]);
+                if (i < current_frames.size())
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_current.jpg", current_frames[i], camera["files"]);
+                if (i < dart_result.averaged_frames.size())
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_averaged.jpg", dart_result.averaged_frames[i], camera["files"]);
+                if (i < dart_result.board_state_masks.size())
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_board_state_mask.jpg", dart_result.board_state_masks[i], camera["files"]);
+                if (i < dart_result.new_dart_masks.size())
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_new_dart_mask.jpg", dart_result.new_dart_masks[i], camera["files"]);
+
+                if (i < background_frames.size() && i < dart_result.camera_results.size())
+                {
+                    Mat overlay = background_frames[i].clone();
+                    const auto &detection = dart_result.camera_results[i];
+                    if (detection.tip_found)
+                    {
+                        line(overlay, detection.center_position, detection.tip_position, Scalar(0, 215, 255), 2);
+                        circle(overlay, detection.center_position, 6, Scalar(0, 215, 255), 2);
+                        circle(overlay, detection.tip_position, 8, Scalar(0, 0, 255), -1);
+                    }
+                    const string camera_score = score_diagnostic == nullptr
+                                                    ? "NO TIP"
+                                                    : score_diagnostic->ring + " / " + score_diagnostic->score;
+                    putText(overlay, camera_score, Point(20, 35), FONT_HERSHEY_SIMPLEX, 0.8, Scalar(0, 255, 0), 2);
+                    saveDiagnosticImage(event_directory, "camera_" + to_string(i) + "_overlay.jpg", overlay, camera["files"]);
+                }
+
+                manifest["cameras"].push_back(camera);
+            }
+
+            ofstream manifest_file(event_directory / "manifest.json");
+            manifest_file << manifest.dump(2) << endl;
+            log_info("DIAGNOSTIC_EVENT id=" + event_id +
+                     " score=" + score_result.score +
+                     " path=" + event_directory.string());
+        }
+        catch (const exception &error)
+        {
+            log_error("Failed to capture diagnostic event " + event_id + ": " + error.what());
+        }
+    }
+}
 
 // Constructor
 GeometryDetector::GeometryDetector(bool debug_mode, int target_width, int target_height, int target_fps,
@@ -48,6 +218,11 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
     // Only return result if scoring system says it's valid (state changed)
     if (score_result.valid)
     {
+        const uint64_t timestamp = chrono::duration_cast<chrono::milliseconds>(
+                                       chrono::system_clock::now().time_since_epoch())
+                                       .count();
+        result.timestamp = timestamp;
+        result.event_id = makeDiagnosticEventId(timestamp);
         result.dart_detected = true;
         result.score = score_result.score;
         result.position = score_result.pixel_position;
@@ -55,6 +230,18 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
         result.has_board_position = score_result.has_dartboard_position;
         result.confidence = score_result.confidence;
         result.camera_index = score_result.camera_index;
+
+        if (debug_mode)
+        {
+            captureDiagnosticEvent(
+                result.event_id,
+                timestamp,
+                frames,
+                background_frames,
+                dart_result,
+                score_result,
+                calibrations);
+        }
     }
 
     return result;

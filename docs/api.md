@@ -16,6 +16,7 @@ The **main feature** - connects and receives live dart scores as JSON messages i
 
 ```json
 {
+  "event_id": "event-1699123456789-1",
   "score": "D20",
   "position": { "x": 150, "y": 200 },
   "board_position": {
@@ -34,6 +35,7 @@ The **main feature** - connects and receives live dart scores as JSON messages i
 
 | Field             | Type      | Range                                                | Description             |
 | ----------------- | --------- | ---------------------------------------------------- | ----------------------- |
+| `event_id`        | `string`  | Opaque                                               | Stable ID for the throw's diagnostic capture and ground-truth label |
 | `score`           | `string`  | `"S1"-"D20"`, `"BULL"`, `"OUTER"`, `"MISS"`, `"END"` | Dart score value        |
 | `position.x`      | `integer` | `0-XXX`                                              | X coordinate in pixels  |
 | `position.y`      | `integer` | `0-XXX`                                              | Y coordinate in pixels  |
@@ -47,6 +49,8 @@ The **main feature** - connects and receives live dart scores as JSON messages i
 | `timestamp`       | `integer` | Unix timestamp                                       | Message timestamp in ms |
 
 `position` remains the source-camera pixel coordinate for backward compatibility. `board_position` is additive and optional, so existing clients can continue to use the original fields unchanged. It is normalized independently on each camera from the detected bull center, outer double ellipse, and detected wedge-20 orientation. It is omitted when those inputs are invalid.
+
+When debug mode is enabled, `event_id` identifies a persistent folder under `debug_frames/events/`. The folder contains the before/current/averaged images, masks, annotated tip, and a machine-readable `manifest.json` for every camera.
 
 ## Simple Client Example
 
@@ -180,6 +184,28 @@ client.connect()
 ---
 
 ## HTTP REST API (Secondary)
+
+### Diagnostic Events
+
+List recent event manifests:
+
+```
+GET http://<ip-adress>:13520/debug/events?limit=100
+```
+
+Attach the human-observed result to a capture:
+
+```
+POST http://<ip-adress>:13520/debug/events/<event_id>/label
+Content-Type: application/json
+
+{
+  "actual_score": "S1",
+  "note": "Optional observation"
+}
+```
+
+Valid labels are `MISS`, `BULL`, `OUTER`, or `S`/`D`/`T` followed by `1`–`20`. Labeling updates the event manifest and writes `label.json`, allowing captured failures to become deterministic replay fixtures.
 
 ### Health Check
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <opencv2/opencv.hpp>
+#include <limits>
 #include "dart_processing.hpp"
 #include "../calibration/geometry_calibration.hpp"
 
@@ -9,6 +10,15 @@ using namespace std;
 
 namespace score_processing
 {
+    struct CameraScoreDiagnostic
+    {
+        int camera_index = -1;
+        bool tip_found = false;
+        string ring = "MISS";
+        string score = "MISS";
+        float nearest_wire_distance = numeric_limits<float>::infinity();
+    };
+
     // Score result for a single dart
     struct ScoreResult
     {
@@ -20,6 +30,7 @@ namespace score_processing
         float confidence = 0.0f;                      // Scoring confidence
         int camera_index = -1;                        // Which camera detected this
         bool valid = false;                           // Is this a valid score result
+        vector<CameraScoreDiagnostic> camera_diagnostics;
     };
 
     // Convert a camera pixel to a canonical board-centered coordinate system.

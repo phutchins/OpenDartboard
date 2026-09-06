@@ -18,6 +18,8 @@ namespace dart_processing
         DART_3  // 3 darts on board
     };
 
+    string getDartBoardStateName(DartBoardState state);
+
     // Parameters for dart state detection
     struct DartParams
     {
@@ -56,6 +58,13 @@ namespace dart_processing
         bool state_changed = false;                            // Did the state change this frame
         int confidence_frames = 0;                             // How many frames we've been confident in this state
         vector<CameraDetectionResult> camera_results;          // Results from each camera
+
+        // Event-scoped images retained only long enough for the geometry detector
+        // to write a replayable diagnostic capture. These prevent the fixed-name
+        // debug images from being overwritten before a failed throw is inspected.
+        vector<Mat> averaged_frames;
+        vector<Mat> board_state_masks;
+        vector<Mat> new_dart_masks;
     };
 
     // Process dart state detection using background comparison on all 3 cameras

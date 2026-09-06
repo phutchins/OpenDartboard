@@ -333,6 +333,12 @@ namespace dart_processing
 
         // initialise variables
         result.camera_results.resize(current_frames.size());
+        if (debug_mode)
+        {
+            result.averaged_frames.resize(current_frames.size());
+            result.board_state_masks.resize(current_frames.size());
+            result.new_dart_masks.resize(current_frames.size());
+        }
 
         // Process all cameras - use pre-computed averages
         vector<DartBoardState> camera_states;
@@ -391,6 +397,8 @@ namespace dart_processing
                 // Store debug frames for visualization
                 dart_diffs.push_back(diff);
                 dart_threshs.push_back(thresh);
+                result.averaged_frames[i] = averaged_frame.clone();
+                result.board_state_masks[i] = thresh.clone();
             }
 
             // set camera result
@@ -490,6 +498,7 @@ namespace dart_processing
             if (debug_mode)
             {
                 imwrite("debug_frames/dart_processing/diff_thresh_cam_" + to_string(i) + ".jpg", single_thresh);
+                result.new_dart_masks[i] = single_thresh.clone();
 
                 // Store debug frames for visualization
                 dart_thresh_diffs.push_back(single_thresh);
