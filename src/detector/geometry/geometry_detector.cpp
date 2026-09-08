@@ -421,6 +421,27 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
         log_info("CALIBRATION_ATTEMPTS_COMPLETE reason=max_attempts");
 
     calibrations = best_calibrations;
+    // Calibration attempts emit intermediate status records. Re-emit the
+    // selected result for every camera so status consumers never mistake the
+    // final attempt for the best calibration that is actually in use.
+    for (const auto &calibration : calibrations)
+    {
+        const CalibrationStatus status = geometry_calibration::getCalibrationStatus(calibration);
+        log_info(
+            "CALIBRATION_STATUS camera=" + to_string(calibration.camera_index) +
+            " status=" + geometry_calibration::calibrationStatusToString(status) +
+            " geometry=" + (geometry_calibration::hasValidGeometry(calibration) ? "valid" : "invalid") +
+            " orientation=" + (geometry_calibration::hasValidOrientation(calibration) ? "valid" : "invalid") +
+            " camera_position=" + orientation_processing::cameraPositionToString(
+                calibration.orientation.cameraPosition) +
+            " wedge20_wire=" + to_string(calibration.orientation.wedge20WireIndex) +
+            " south_wire=" + to_string(calibration.orientation.southWireIndex) +
+            " wires_valid=" + (calibration.wires.isValid ? "true" : "false") +
+            " doubles_valid=" + (calibration.ellipses.hasValidDoubles ? "true" : "false") +
+            " triples_valid=" + (calibration.ellipses.hasValidTriples ? "true" : "false") +
+            " bulls_valid=" + (calibration.ellipses.hasValidBulls ? "true" : "false") +
+            " selection=final");
+    }
     for (size_t camera_index = 0; camera_index < best_frames.size(); ++camera_index)
     {
         if (best_frames[camera_index].empty() && camera_index < initial_frames.size())
