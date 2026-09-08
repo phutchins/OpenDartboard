@@ -26,70 +26,63 @@ namespace ellipse_processing
             double radians = angle * CV_PI / 180.0;
             Point2f direction(cos(radians), sin(radians));
 
-            // Find INNER boundary (first white pixel)
+            // Scan every colored run and retain the outermost complete one.
+            // The mask contains both scoring rings; choosing the first white
+            // pixel incorrectly fits the triple ring as doubles whenever the
+            // outer ring is not the largest connected component.
             Point innerBoundary = bullCenter;
+            Point outerBoundary = bullCenter;
             bool foundInner = false;
+            bool foundOuter = false;
+            bool inWhiteRun = false;
+            Point runInner = bullCenter;
+            Point lastWhite = bullCenter;
+            int consecutiveBlackCount = 0;
+            const int minConsecutiveBlack = 5;
+
+            const auto acceptRun = [&]()
+            {
+                if (inWhiteRun && lastWhite != runInner)
+                {
+                    innerBoundary = runInner;
+                    outerBoundary = lastWhite;
+                    foundInner = true;
+                    foundOuter = true;
+                }
+            };
 
             for (int distance = params.innerRayStartDistance; distance < params.maxRayDistance; distance++)
             {
                 Point checkPoint = bullCenter + Point(direction.x * distance, direction.y * distance);
-
                 if (checkPoint.x < 0 || checkPoint.x >= preprocessedMask.cols ||
                     checkPoint.y < 0 || checkPoint.y >= preprocessedMask.rows)
+                {
+                    acceptRun();
                     break;
+                }
 
                 if (preprocessedMask.at<uchar>(checkPoint) > 0)
                 {
-                    innerBoundary = checkPoint;
-                    foundInner = true;
-                    break;
-                }
-            }
-
-            // Find OUTER boundary (last white pixel before sustained black)
-            Point outerBoundary = bullCenter;
-            bool foundOuter = false;
-
-            if (foundInner)
-            {
-                Point lastWhitePixel = innerBoundary;
-                int consecutiveBlackCount = 0;
-                const int minConsecutiveBlack = 5;
-
-                for (int distance = norm(innerBoundary - bullCenter); distance < params.maxRayDistance; distance++)
-                {
-                    Point checkPoint = bullCenter + Point(direction.x * distance, direction.y * distance);
-
-                    if (checkPoint.x < 0 || checkPoint.x >= preprocessedMask.cols ||
-                        checkPoint.y < 0 || checkPoint.y >= preprocessedMask.rows)
+                    if (!inWhiteRun)
                     {
-                        if (lastWhitePixel != innerBoundary)
-                        {
-                            outerBoundary = lastWhitePixel;
-                            foundOuter = true;
-                        }
-                        break;
+                        runInner = checkPoint;
+                        inWhiteRun = true;
                     }
-
-                    bool isWhite = (preprocessedMask.at<uchar>(checkPoint) > 0);
-
-                    if (isWhite)
+                    lastWhite = checkPoint;
+                    consecutiveBlackCount = 0;
+                }
+                else if (inWhiteRun)
+                {
+                    consecutiveBlackCount++;
+                    if (consecutiveBlackCount >= minConsecutiveBlack)
                     {
-                        lastWhitePixel = checkPoint;
+                        acceptRun();
+                        inWhiteRun = false;
                         consecutiveBlackCount = 0;
                     }
-                    else
-                    {
-                        consecutiveBlackCount++;
-                        if (consecutiveBlackCount >= minConsecutiveBlack && lastWhitePixel != innerBoundary)
-                        {
-                            outerBoundary = lastWhitePixel;
-                            foundOuter = true;
-                            break;
-                        }
-                    }
                 }
             }
+            acceptRun();
 
             // Calculate ring width
             bool validRay = foundInner && foundOuter;
@@ -347,6 +340,17 @@ namespace ellipse_processing
                         continue;
 
                     const RotatedRect outerCandidate = fitEllipse(allTriplesContours[outerIndex]);
+                    const float relativeToOuterDouble =
+                        board_geometry::ellipseArea(outerCandidate) /
+                        board_geometry::ellipseArea(result.outerDoubleEllipse);
+                    // The triple outer radius is 107/170 of the double outer
+                    // radius. Broad bounds allow perspective while excluding
+                    // the doubles contours that share this all-rings mask.
+                    if (!isfinite(relativeToOuterDouble) ||
+                        relativeToOuterDouble < 0.20f ||
+                        relativeToOuterDouble > 0.65f)
+                        continue;
+
                     for (size_t innerIndex = outerIndex + 1; innerIndex < allTriplesContours.size(); ++innerIndex)
                     {
                         if (allTriplesContours[innerIndex].size() < 5 ||
@@ -365,6 +369,7 @@ namespace ellipse_processing
                             " inner=" + log_string(innerIndex) +
                             " valid=" + (correction.valid ? string("true") : string("false")) +
                             " detected_area_ratio=" + log_string(diagnostics.areaRatio) +
+                            " outer_to_double_area_ratio=" + log_string(relativeToOuterDouble) +
                             " expected_area_ratio=" + log_string(diagnostics.expectedAreaRatio) +
                             " center_offset_ratio=" + log_string(diagnostics.centerOffsetRatio) +
                             " aspect_difference=" + log_string(diagnostics.aspectRatioDifference) +

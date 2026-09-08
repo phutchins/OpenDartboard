@@ -7,7 +7,10 @@ using namespace std;
 namespace mask_processing
 {
     // Moved from ellipse_processing - preprocess mask to remove artifacts
-    Mat preprocessMask(const Mat &inputMask, const MaskParams &params)
+    Mat preprocessMask(
+        const Mat &inputMask,
+        const MaskParams &params,
+        bool keepLargestComponent = true)
     {
         Mat cleanedMask = inputMask.clone();
 
@@ -30,7 +33,7 @@ namespace mask_processing
         Mat labels, stats, centroids;
         int nLabels = connectedComponentsWithStats(cleanedMask, labels, stats, centroids);
 
-        if (nLabels > 1)
+        if (keepLargestComponent && nLabels > 1)
         {
             // Find largest component (excluding background)
             int largestIdx = 1;
@@ -102,13 +105,12 @@ namespace mask_processing
         result.fullMask = basicMask.clone();
         result.fullMask.setTo(0, bullRedMask); // Carve out bull to reveal underlying rings
 
-        // Step 4: Create doubles mask (preprocessed, for ellipse detection)
-        result.doublesMask = preprocessMask(result.fullMask, params); // Apply preprocessing to carved mask
-
-        // Step 5: Create triples mask by subtracting doubles from full mask
-        Mat triplesMaskRaw = result.fullMask.clone();
-        triplesMaskRaw.setTo(0, result.doublesMask);                 // Remove doubles area from full mask
-        result.triplesMask = preprocessMask(triplesMaskRaw, params); // Preprocess the remaining triples area
+        // Preserve every connected colored ring. The old largest-component
+        // shortcut occasionally selected the triple ring as "doubles" when a
+        // camera frame contained a small gap in the outer ring. Ellipse
+        // processing now distinguishes the rings by radius.
+        result.doublesMask = preprocessMask(result.fullMask, params, false);
+        result.triplesMask = result.doublesMask.clone();
 
         // Step 6: Create outer bull mask by subtracting both doubles and triples
         Mat outerBullMaskRaw = result.fullMask.clone();
