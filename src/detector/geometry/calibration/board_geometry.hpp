@@ -53,6 +53,159 @@ namespace board_geometry
                ellipse.center.y >= 0.0f && ellipse.center.y < frameSize.height;
     }
 
+    struct RingPairDiagnostics
+    {
+        bool valid = false;
+        float areaRatio = 0.0f;
+        float expectedAreaRatio = 0.0f;
+        float centerOffsetRatio = 0.0f;
+        float aspectRatioDifference = 0.0f;
+        float majorAxisAngleDifferenceDegrees = 0.0f;
+        const char *reason = "invalid_ellipse";
+    };
+
+    inline float ellipseArea(const cv::RotatedRect &ellipse)
+    {
+        return ellipse.size.width * ellipse.size.height;
+    }
+
+    inline float ellipseAspectRatio(const cv::RotatedRect &ellipse)
+    {
+        const float major = std::max(ellipse.size.width, ellipse.size.height);
+        const float minor = std::min(ellipse.size.width, ellipse.size.height);
+        return major > 0.0f ? minor / major : 0.0f;
+    }
+
+    inline float ellipseMajorAxisAngle(const cv::RotatedRect &ellipse)
+    {
+        float angle = ellipse.angle + (ellipse.size.width < ellipse.size.height ? 90.0f : 0.0f);
+        while (angle < 0.0f)
+            angle += 180.0f;
+        while (angle >= 180.0f)
+            angle -= 180.0f;
+        return angle;
+    }
+
+    inline float undirectedAngleDifference(float first, float second)
+    {
+        const float difference = std::fabs(first - second);
+        return std::min(difference, 180.0f - difference);
+    }
+
+    // Neighboring circles on a real board remain a close, nested pair after
+    // perspective projection. These checks reject plausible-looking contours
+    // that actually span felt outside the physical ring wires.
+    inline RingPairDiagnostics validateProjectedRingPair(
+        const cv::RotatedRect &inner,
+        const cv::RotatedRect &outer,
+        float expectedInnerRadius,
+        float expectedOuterRadius,
+        float minAreaRatio = 0.80f,
+        float maxAreaRatio = 0.94f,
+        float maxCenterOffsetRatio = 0.18f,
+        float maxAspectRatioDifference = 0.12f,
+        float maxAngleDifferenceDegrees = 12.0f)
+    {
+        RingPairDiagnostics result;
+        const float innerArea = ellipseArea(inner);
+        const float outerArea = ellipseArea(outer);
+        const float outerMinorRadius = std::min(outer.size.width, outer.size.height) * 0.5f;
+        if (!std::isfinite(innerArea) || !std::isfinite(outerArea) ||
+            !std::isfinite(expectedInnerRadius) || !std::isfinite(expectedOuterRadius) ||
+            innerArea <= 0.0f || outerArea <= 0.0f || outerMinorRadius <= 0.0f ||
+            expectedInnerRadius <= 0.0f || expectedOuterRadius <= expectedInnerRadius)
+            return result;
+
+        result.areaRatio = innerArea / outerArea;
+        result.expectedAreaRatio =
+            (expectedInnerRadius * expectedInnerRadius) /
+            (expectedOuterRadius * expectedOuterRadius);
+        result.centerOffsetRatio = cv::norm(inner.center - outer.center) / outerMinorRadius;
+        result.aspectRatioDifference =
+            std::fabs(ellipseAspectRatio(inner) - ellipseAspectRatio(outer));
+        result.majorAxisAngleDifferenceDegrees = undirectedAngleDifference(
+            ellipseMajorAxisAngle(inner),
+            ellipseMajorAxisAngle(outer));
+
+        const float innerMajor = std::max(inner.size.width, inner.size.height);
+        const float innerMinor = std::min(inner.size.width, inner.size.height);
+        const float outerMajor = std::max(outer.size.width, outer.size.height);
+        const float outerMinor = std::min(outer.size.width, outer.size.height);
+        if (innerMajor >= outerMajor || innerMinor >= outerMinor)
+        {
+            result.reason = "not_nested";
+            return result;
+        }
+        if (result.areaRatio < minAreaRatio || result.areaRatio > maxAreaRatio)
+        {
+            result.reason = "implausible_ring_width";
+            return result;
+        }
+        if (result.centerOffsetRatio > maxCenterOffsetRatio)
+        {
+            result.reason = "centers_disagree";
+            return result;
+        }
+        if (result.aspectRatioDifference > maxAspectRatioDifference)
+        {
+            result.reason = "perspective_shape_disagrees";
+            return result;
+        }
+        if (result.majorAxisAngleDifferenceDegrees > maxAngleDifferenceDegrees)
+        {
+            result.reason = "axes_disagree";
+            return result;
+        }
+
+        result.valid = true;
+        result.reason = "valid";
+        return result;
+    }
+
+    struct BullPairDiagnostics
+    {
+        bool valid = false;
+        float areaRatio = 0.0f;
+        float centerDistancePixels = 0.0f;
+        float maxCenterDistancePixels = 0.0f;
+        const char *reason = "invalid_ellipse";
+    };
+
+    inline BullPairDiagnostics validateBullPair(
+        const cv::RotatedRect &innerBull,
+        const cv::RotatedRect &outerBull,
+        const cv::RotatedRect &outerDouble,
+        float maxCenterDistanceRatio = 0.10f)
+    {
+        BullPairDiagnostics result;
+        const float innerArea = ellipseArea(innerBull);
+        const float outerArea = ellipseArea(outerBull);
+        const float referenceMinorRadius =
+            std::min(outerDouble.size.width, outerDouble.size.height) * 0.5f;
+        if (!std::isfinite(innerArea) || !std::isfinite(outerArea) ||
+            !std::isfinite(referenceMinorRadius) || innerArea <= 0.0f ||
+            outerArea <= 0.0f || referenceMinorRadius <= 0.0f)
+            return result;
+
+        result.areaRatio = innerArea / outerArea;
+        result.centerDistancePixels = cv::norm(innerBull.center - outerBull.center);
+        result.maxCenterDistancePixels = referenceMinorRadius * maxCenterDistanceRatio;
+        if (result.areaRatio <= 0.03f || result.areaRatio >= 0.65f)
+        {
+            result.reason = "implausible_bull_size";
+            return result;
+        }
+        if (result.centerDistancePixels > result.maxCenterDistancePixels)
+        {
+            result.reason = "centers_disagree";
+            return result;
+        }
+
+        result.valid = true;
+        result.reason = "valid";
+        return result;
+    }
+
     // Refine a coarse color-contour center from the fitted bull ellipses. The
     // outer-double minor radius provides a scale-independent displacement
     // bound. Inner bull is preferred only when its independently fitted outer

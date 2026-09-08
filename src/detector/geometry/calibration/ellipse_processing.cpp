@@ -1,6 +1,8 @@
 #include "ellipse_processing.hpp"
+#include "board_geometry.hpp"
 #include "utils.hpp"
 #include <cmath>
+#include <limits>
 
 using namespace cv;
 using namespace std;
@@ -332,39 +334,76 @@ namespace ellipse_processing
 
             try
             {
-                // Fit outer ellipse to largest contour
-                if (allTriplesContours.size() >= 1 && allTriplesContours[0].size() >= 5)
+                // Evaluate contour pairs instead of assuming that the two
+                // largest contours are physical wire boundaries. A valid pair
+                // must have the width, nesting, center, and perspective shape
+                // of the standard 99/107 mm triple ring.
+                double bestQuality = numeric_limits<double>::infinity();
+                board_geometry::RingPairDiagnostics bestDiagnostics;
+                for (size_t outerIndex = 0; outerIndex < allTriplesContours.size(); ++outerIndex)
                 {
-                    result.outerTripleEllipse = fitEllipse(allTriplesContours[0]);
-                    log_debug("SUCCESS - Fitted outer triple ellipse from largest contour (area: " + log_string(contourArea(allTriplesContours[0])) + ")");
-                }
+                    if (allTriplesContours[outerIndex].size() < 5 ||
+                        contourArea(allTriplesContours[outerIndex]) < params.minContourArea)
+                        continue;
 
-                // Find a DIFFERENT contour for inner (skip the one we just used)
-                bool foundInner = false;
-                for (size_t i = 1; i < allTriplesContours.size(); i++)
-                {
-                    if (allTriplesContours[i].size() >= 5)
+                    const RotatedRect outerCandidate = fitEllipse(allTriplesContours[outerIndex]);
+                    for (size_t innerIndex = outerIndex + 1; innerIndex < allTriplesContours.size(); ++innerIndex)
                     {
-                        double areaRatio = contourArea(allTriplesContours[i]) / contourArea(allTriplesContours[0]);
-                        log_debug("Checking contour " + log_string(i) + " - area ratio: " + log_string(areaRatio));
+                        if (allTriplesContours[innerIndex].size() < 5 ||
+                            contourArea(allTriplesContours[innerIndex]) < params.minContourArea)
+                            continue;
 
-                        // Only use if it's significantly different in size (not the same contour)
-                        if (areaRatio < 0.9) // At least 10% smaller
+                        const RotatedRect innerCandidate = fitEllipse(allTriplesContours[innerIndex]);
+                        const auto diagnostics = board_geometry::validateProjectedRingPair(
+                            innerCandidate,
+                            outerCandidate,
+                            99.0f,
+                            107.0f);
+                        log_debug(
+                            "TRIPLE_RING_CANDIDATE outer=" + log_string(outerIndex) +
+                            " inner=" + log_string(innerIndex) +
+                            " valid=" + (diagnostics.valid ? string("true") : string("false")) +
+                            " area_ratio=" + log_string(diagnostics.areaRatio) +
+                            " expected_area_ratio=" + log_string(diagnostics.expectedAreaRatio) +
+                            " center_offset_ratio=" + log_string(diagnostics.centerOffsetRatio) +
+                            " aspect_difference=" + log_string(diagnostics.aspectRatioDifference) +
+                            " axis_difference_degrees=" + log_string(diagnostics.majorAxisAngleDifferenceDegrees) +
+                            " reason=" + diagnostics.reason);
+                        if (!diagnostics.valid)
+                            continue;
+
+                        const double quality =
+                            abs(diagnostics.areaRatio - diagnostics.expectedAreaRatio) +
+                            diagnostics.centerOffsetRatio * 0.25 +
+                            diagnostics.aspectRatioDifference * 0.25 +
+                            diagnostics.majorAxisAngleDifferenceDegrees / 360.0;
+                        if (quality < bestQuality)
                         {
-                            result.innerTripleEllipse = fitEllipse(allTriplesContours[i]);
-                            log_debug("SUCCESS - Fitted inner triple ellipse from contour " + log_string(i) + " (area: " + log_string(contourArea(allTriplesContours[i])) + ")");
-                            foundInner = true;
-                            break;
+                            bestQuality = quality;
+                            bestDiagnostics = diagnostics;
+                            result.outerTripleEllipse = outerCandidate;
+                            result.innerTripleEllipse = innerCandidate;
                         }
                     }
                 }
 
-                if (!foundInner)
+                result.hasValidTriples = isfinite(bestQuality);
+                if (result.hasValidTriples)
                 {
-                    log_debug("FAILED - No suitable inner contour found, all contours too similar");
+                    log_info(
+                        "TRIPLE_RING_QUALITY camera=" + log_string(camera_idx) +
+                        " status=VALID area_ratio=" + log_string(bestDiagnostics.areaRatio) +
+                        " expected_area_ratio=" + log_string(bestDiagnostics.expectedAreaRatio) +
+                        " center_offset_ratio=" + log_string(bestDiagnostics.centerOffsetRatio));
                 }
-
-                result.hasValidTriples = (result.outerTripleEllipse.size.area() > 0 && result.innerTripleEllipse.size.area() > 0);
+                else
+                {
+                    result.outerTripleEllipse = RotatedRect();
+                    result.innerTripleEllipse = RotatedRect();
+                    log_warning(
+                        "TRIPLE_RING_QUALITY camera=" + log_string(camera_idx) +
+                        " status=INVALID reason=no_plausible_contour_pair");
+                }
             }
             catch (const cv::Exception &e)
             {
@@ -437,8 +476,30 @@ namespace ellipse_processing
             }
         }
 
-        // Set bull validation flag
-        result.hasValidBulls = (result.outerBullEllipse.size.area() > 0 || result.innerBullEllipse.size.area() > 0);
+        // Both bull boundaries must be present and agree. Previously a single
+        // stray contour was enough to mark the camera ready and could move the
+        // calibration center tens of pixels away from the physical bull.
+        const auto bullDiagnostics = board_geometry::validateBullPair(
+            result.innerBullEllipse,
+            result.outerBullEllipse,
+            result.outerDoubleEllipse);
+        result.hasValidBulls = bullDiagnostics.valid;
+        if (result.hasValidBulls)
+        {
+            log_info(
+                "BULL_RING_QUALITY camera=" + log_string(camera_idx) +
+                " status=VALID area_ratio=" + log_string(bullDiagnostics.areaRatio) +
+                " center_distance_px=" + log_string(bullDiagnostics.centerDistancePixels));
+        }
+        else
+        {
+            log_warning(
+                "BULL_RING_QUALITY camera=" + log_string(camera_idx) +
+                " status=INVALID area_ratio=" + log_string(bullDiagnostics.areaRatio) +
+                " center_distance_px=" + log_string(bullDiagnostics.centerDistancePixels) +
+                " max_center_distance_px=" + log_string(bullDiagnostics.maxCenterDistancePixels) +
+                " reason=" + bullDiagnostics.reason);
+        }
 
         // SECTION 4: PERSPECTIVE ANALYSIS (using doubles as reference)
         if (result.hasValidDoubles)

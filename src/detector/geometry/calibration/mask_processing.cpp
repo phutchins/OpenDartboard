@@ -7,7 +7,10 @@ using namespace std;
 namespace mask_processing
 {
     // Moved from ellipse_processing - preprocess mask to remove artifacts
-    Mat preprocessMask(const Mat &inputMask, const MaskParams &params)
+    Mat preprocessMask(
+        const Mat &inputMask,
+        const MaskParams &params,
+        bool dilateForRayCasting = true)
     {
         Mat cleanedMask = inputMask.clone();
 
@@ -21,10 +24,17 @@ namespace mask_processing
                                                Size(params.maskOpenKernelSize, params.maskOpenKernelSize));
         morphologyEx(cleanedMask, cleanedMask, MORPH_OPEN, openKernel);
 
-        // Step 3: Slight dilation - smooth boundaries for better ray casting
-        Mat dilateKernel = getStructuringElement(MORPH_ELLIPSE,
-                                                 Size(params.maskDilateKernelSize, params.maskDilateKernelSize));
-        dilate(cleanedMask, cleanedMask, dilateKernel);
+        // Dilation helps the doubles ray tracer bridge small color gaps, but it
+        // must not be used for contour-fitted rings. It expands the outer edge
+        // and contracts the inner hole, making triples appear much thicker than
+        // their physical wires.
+        if (dilateForRayCasting)
+        {
+            Mat dilateKernel = getStructuringElement(
+                MORPH_ELLIPSE,
+                Size(params.maskDilateKernelSize, params.maskDilateKernelSize));
+            dilate(cleanedMask, cleanedMask, dilateKernel);
+        }
 
         // Step 4: Keep only the largest connected component
         Mat labels, stats, centroids;
@@ -93,28 +103,31 @@ namespace mask_processing
             }
         }
 
+        // Keep an undilated component for fitting the physical bull wire. A
+        // separate expanded copy is used only to carve the bull from the ring
+        // mask.
+        result.bullMask = preprocessMask(bullRedMask, params, false);
+        Mat bullCarveMask;
         Mat dilateKernel = getStructuringElement(MORPH_ELLIPSE, Size(5, 5));
-        dilate(bullRedMask, bullRedMask, dilateKernel);
-
-        result.bullMask = bullRedMask.clone(); // 50-point bullseye (double bull)
+        dilate(bullRedMask, bullCarveMask, dilateKernel);
 
         // Step 3: Create fullMask - carved version that reveals ring structure
         result.fullMask = basicMask.clone();
-        result.fullMask.setTo(0, bullRedMask); // Carve out bull to reveal underlying rings
+        result.fullMask.setTo(0, bullCarveMask); // Carve out bull to reveal underlying rings
 
         // Step 4: Create doubles mask (preprocessed, for ellipse detection)
-        result.doublesMask = preprocessMask(result.fullMask, params); // Apply preprocessing to carved mask
+        result.doublesMask = preprocessMask(result.fullMask, params, true); // Ray tracing benefits from dilation
 
         // Step 5: Create triples mask by subtracting doubles from full mask
         Mat triplesMaskRaw = result.fullMask.clone();
         triplesMaskRaw.setTo(0, result.doublesMask);                 // Remove doubles area from full mask
-        result.triplesMask = preprocessMask(triplesMaskRaw, params); // Preprocess the remaining triples area
+        result.triplesMask = preprocessMask(triplesMaskRaw, params, false); // Keep physical wire boundaries
 
         // Step 6: Create outer bull mask by subtracting both doubles and triples
         Mat outerBullMaskRaw = result.fullMask.clone();
         outerBullMaskRaw.setTo(0, result.doublesMask);                   // Remove doubles
         outerBullMaskRaw.setTo(0, result.triplesMask);                   // Remove triples
-        result.outerBullMask = preprocessMask(outerBullMaskRaw, params); // Preprocess the remaining outer bull area
+        result.outerBullMask = preprocessMask(outerBullMaskRaw, params, false); // Keep physical wire boundaries
 
         result.isValid = true;
 

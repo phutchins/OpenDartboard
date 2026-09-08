@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "geometry_detector.hpp"
+#include "calibration/board_geometry.hpp"
 #include "calibration/dartboard_visualization.hpp"
 #include "calibration/geometry_calibration.hpp"
 #include "detection/dart_processing.hpp"
@@ -35,22 +36,51 @@ namespace
         }
     }
 
-    bool hasUsableCalibrationForEveryCamera(
+    double calibrationQualityScore(const DartboardCalibration &calibration)
+    {
+        double score = static_cast<double>(calibrationStatusRank(calibration)) * 10000.0;
+        score += min(calibration.ellipses.validOuterPoints, 200);
+        score += min(calibration.ellipses.validInnerPoints, 200);
+
+        if (calibration.ellipses.hasValidTriples)
+        {
+            const auto tripleQuality = board_geometry::validateProjectedRingPair(
+                calibration.ellipses.innerTripleEllipse,
+                calibration.ellipses.outerTripleEllipse,
+                99.0f,
+                107.0f);
+            if (tripleQuality.valid)
+                score += 1000.0 -
+                         abs(tripleQuality.areaRatio - tripleQuality.expectedAreaRatio) * 2000.0 -
+                         tripleQuality.centerOffsetRatio * 250.0;
+        }
+
+        if (calibration.ellipses.hasValidBulls)
+        {
+            const auto bullQuality = board_geometry::validateBullPair(
+                calibration.ellipses.innerBullEllipse,
+                calibration.ellipses.outerBullEllipse,
+                calibration.ellipses.outerDoubleEllipse);
+            if (bullQuality.valid)
+                score += 500.0 - bullQuality.centerDistancePixels;
+        }
+        return score;
+    }
+
+    bool hasReadyCalibrationForEveryCamera(
         const vector<DartboardCalibration> &calibrations,
         size_t camera_count)
     {
         if (calibrations.size() != camera_count || camera_count == 0)
             return false;
 
-        bool any_ready = false;
         for (const auto &calibration : calibrations)
         {
             const CalibrationStatus status = geometry_calibration::getCalibrationStatus(calibration);
-            if (status == CalibrationStatus::INVALID)
+            if (status != CalibrationStatus::READY)
                 return false;
-            any_ready = any_ready || status == CalibrationStatus::READY;
         }
-        return any_ready;
+        return true;
     }
 
     void saveSelectedCalibrationVisualizations(
@@ -331,6 +361,7 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
     vector<Mat> initial_frames;
     vector<DartboardCalibration> best_calibrations(cameras.size());
     vector<Mat> best_frames(cameras.size());
+    bool completed_early = false;
 
     for (int attempt = 1; attempt <= calibration_capture_attempts; ++attempt)
     {
@@ -358,8 +389,10 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
                 continue;
 
             const size_t camera_index = static_cast<size_t>(candidate.camera_index);
+            const double candidate_quality = calibrationQualityScore(candidate);
+            const double best_quality = calibrationQualityScore(best_calibrations[camera_index]);
             if (best_calibrations[camera_index].camera_index < 0 ||
-                calibrationStatusRank(candidate) > calibrationStatusRank(best_calibrations[camera_index]))
+                candidate_quality > best_quality)
             {
                 best_calibrations[camera_index] = candidate;
                 if (camera_index < attempt_frames.size())
@@ -367,16 +400,25 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
                 log_info("CALIBRATION_SELECTED camera=" + to_string(camera_index) +
                          " attempt=" + to_string(attempt) +
                          " status=" + geometry_calibration::calibrationStatusToString(
-                             geometry_calibration::getCalibrationStatus(candidate)));
+                             geometry_calibration::getCalibrationStatus(candidate)) +
+                         " quality=" + to_string(candidate_quality));
             }
         }
 
-        if (hasUsableCalibrationForEveryCamera(best_calibrations, cameras.size()))
+        // Partial geometry is useful for scoring, but it is not a reason to
+        // stop looking for a clean capture. Only stop early if every camera is
+        // genuinely ready; otherwise use all attempts and keep the best result
+        // per camera.
+        if (hasReadyCalibrationForEveryCamera(best_calibrations, cameras.size()))
         {
-            log_info("CALIBRATION_ATTEMPTS_COMPLETE reason=all_cameras_usable");
+            log_info("CALIBRATION_ATTEMPTS_COMPLETE reason=all_cameras_ready");
+            completed_early = true;
             break;
         }
     }
+
+    if (!completed_early)
+        log_info("CALIBRATION_ATTEMPTS_COMPLETE reason=max_attempts");
 
     calibrations = best_calibrations;
     for (size_t camera_index = 0; camera_index < best_frames.size(); ++camera_index)

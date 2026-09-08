@@ -111,6 +111,11 @@ namespace score_processing
     // Helper: Check if point is inside ellipse (pure math)
     bool isPointInEllipse(Point2f point, const RotatedRect &ellipse)
     {
+        if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
+            !std::isfinite(ellipse.size.width) || !std::isfinite(ellipse.size.height) ||
+            ellipse.size.width <= 0.0f || ellipse.size.height <= 0.0f)
+            return false;
+
         Point2f center = ellipse.center;
         Point2f relative = point - center;
 
@@ -138,20 +143,24 @@ namespace score_processing
             return Ring::MISS;
         }
 
-        if (isPointInEllipse(pixel, calib.ellipses.innerBullEllipse))
+        if (calib.ellipses.hasValidBulls &&
+            isPointInEllipse(pixel, calib.ellipses.innerBullEllipse))
         {
             log_debug("SCORE: Point in INNER BULL");
             return Ring::INNER_BULL;
         }
 
-        if (isPointInEllipse(pixel, calib.ellipses.outerBullEllipse))
+        if (calib.ellipses.hasValidBulls &&
+            isPointInEllipse(pixel, calib.ellipses.outerBullEllipse))
         {
             log_debug("SCORE: Point in OUTER BULL");
             return Ring::OUTER_BULL;
         }
 
-        bool in_inner_triple = isPointInEllipse(pixel, calib.ellipses.innerTripleEllipse);
-        bool in_outer_triple = isPointInEllipse(pixel, calib.ellipses.outerTripleEllipse);
+        bool in_inner_triple = calib.ellipses.hasValidTriples &&
+                               isPointInEllipse(pixel, calib.ellipses.innerTripleEllipse);
+        bool in_outer_triple = calib.ellipses.hasValidTriples &&
+                               isPointInEllipse(pixel, calib.ellipses.outerTripleEllipse);
         bool in_inner_double = isPointInEllipse(pixel, calib.ellipses.innerDoubleEllipse);
         bool in_outer_double = isPointInEllipse(pixel, calib.ellipses.outerDoubleEllipse);
 
@@ -317,13 +326,20 @@ namespace score_processing
                         calibrations[i]);
                 }
                 Ring ring = Ring::MISS;
-                if (dart_result.camera_results[i].tip_found)
+                if (dart_result.camera_results[i].tip_found &&
+                    geometry_calibration::hasCompleteRingGeometry(calibrations[i]))
                 {
                     ring = classifyRingAtPoint(
                         dart_result.camera_results[i].tip_position,
                         calibrations[i]);
                     if (ring != Ring::MISS)
                         ring_observations.push_back(ring);
+                }
+                else if (dart_result.camera_results[i].tip_found && debug_mode)
+                {
+                    log_warning(
+                        "RING_OBSERVATION_REJECTED camera=" + to_string(i) +
+                        " reason=incomplete_ring_geometry");
                 }
                 string score_test = getScoreForRingAtPoint(
                     ring,

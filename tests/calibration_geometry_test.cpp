@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <string>
 #include <vector>
 
 namespace
@@ -203,6 +204,47 @@ int main()
         frameSize);
     passed &= require(!excessiveShift.accepted,
                       "bull refinement beyond 40 percent of minor radius must be rejected");
+
+    const cv::RotatedRect plausibleOuterTriple(
+        cv::Point2f(620.0f, 430.0f), cv::Size2f(410.0f, 176.0f), 88.0f);
+    const cv::RotatedRect plausibleInnerTriple(
+        cv::Point2f(620.5f, 432.0f), cv::Size2f(379.0f, 163.0f), 88.5f);
+    const auto plausibleTriplePair = board_geometry::validateProjectedRingPair(
+        plausibleInnerTriple, plausibleOuterTriple, 99.0f, 107.0f);
+    passed &= require(plausibleTriplePair.valid,
+                      "a nested projected triple ring near the standard width must validate");
+
+    const cv::RotatedRect dilationInflatedInnerTriple(
+        cv::Point2f(620.5f, 432.0f), cv::Size2f(350.0f, 154.0f), 88.5f);
+    const auto dilationInflatedTriplePair = board_geometry::validateProjectedRingPair(
+        dilationInflatedInnerTriple, plausibleOuterTriple, 99.0f, 107.0f);
+    passed &= require(!dilationInflatedTriplePair.valid &&
+                          std::string(dilationInflatedTriplePair.reason) == "implausible_ring_width",
+                      "a morphology-inflated triple band must not be reported ready");
+
+    const cv::RotatedRect displacedInnerTriple(
+        cv::Point2f(620.0f, 475.0f), cv::Size2f(379.0f, 163.0f), 88.5f);
+    passed &= require(!board_geometry::validateProjectedRingPair(
+                           displacedInnerTriple,
+                           plausibleOuterTriple,
+                           99.0f,
+                           107.0f)
+                           .valid,
+                      "triple boundaries with implausibly separated centers must fail");
+
+    const auto plausibleBullPair = board_geometry::validateBullPair(
+        cv::RotatedRect(cv::Point2f(622.0f, 448.0f), cv::Size2f(28.0f, 13.0f), 88.0f),
+        cv::RotatedRect(cv::Point2f(622.5f, 448.5f), cv::Size2f(65.0f, 31.0f), 88.0f),
+        outerDouble);
+    passed &= require(plausibleBullPair.valid,
+                      "concentric inner and outer bull contours must validate");
+
+    const auto falseBullPair = board_geometry::validateBullPair(
+        cv::RotatedRect(cv::Point2f(565.0f, 420.0f), cv::Size2f(28.0f, 13.0f), 88.0f),
+        cv::RotatedRect(cv::Point2f(622.5f, 448.5f), cv::Size2f(65.0f, 31.0f), 88.0f),
+        outerDouble);
+    passed &= require(!falseBullPair.valid,
+                      "a stray bull contour must not make calibration ready");
 
     return passed ? 0 : 1;
 }
