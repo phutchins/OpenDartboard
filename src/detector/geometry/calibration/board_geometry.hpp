@@ -162,6 +162,92 @@ namespace board_geometry
         return result;
     }
 
+    struct RingPairCorrection
+    {
+        bool valid = false;
+        cv::RotatedRect inner;
+        cv::RotatedRect outer;
+        RingPairDiagnostics sourceDiagnostics;
+        RingPairDiagnostics correctedDiagnostics;
+        float centerSeparationScale = 0.0f;
+    };
+
+    // Color-mask morphology is intentionally generous so the twenty red and
+    // green segments form one connected ring. That makes the fitted band wider
+    // than the wire-to-wire scoring band. Preserve its measured centerline and
+    // perspective, then collapse the two boundaries to the official radii.
+    inline RingPairCorrection correctProjectedRingPair(
+        const cv::RotatedRect &detectedInner,
+        const cv::RotatedRect &detectedOuter,
+        float physicalInnerRadius,
+        float physicalOuterRadius)
+    {
+        RingPairCorrection result;
+        result.sourceDiagnostics = validateProjectedRingPair(
+            detectedInner,
+            detectedOuter,
+            physicalInnerRadius,
+            physicalOuterRadius,
+            0.60f,
+            0.96f,
+            0.30f,
+            0.16f,
+            15.0f);
+        if (!result.sourceDiagnostics.valid)
+            return result;
+
+        const float physicalMidRadius =
+            (physicalInnerRadius + physicalOuterRadius) * 0.5f;
+        const float targetHalfWidthRatio =
+            (physicalOuterRadius - physicalInnerRadius) /
+            (physicalOuterRadius + physicalInnerRadius);
+        const float detectedRadiusRatio = std::sqrt(result.sourceDiagnostics.areaRatio);
+        const float detectedHalfWidthRatio =
+            (1.0f - detectedRadiusRatio) / (1.0f + detectedRadiusRatio);
+        if (!std::isfinite(physicalMidRadius) || physicalMidRadius <= 0.0f ||
+            !std::isfinite(detectedHalfWidthRatio) || detectedHalfWidthRatio <= 0.0f)
+            return result;
+
+        result.centerSeparationScale = std::min(
+            1.0f,
+            targetHalfWidthRatio / detectedHalfWidthRatio);
+        const cv::Point2f middleCenter =
+            (detectedOuter.center + detectedInner.center) * 0.5f;
+        const cv::Point2f halfCenterSeparation =
+            (detectedOuter.center - detectedInner.center) * 0.5f *
+            result.centerSeparationScale;
+
+        const float middleMajor =
+            (std::max(detectedOuter.size.width, detectedOuter.size.height) +
+             std::max(detectedInner.size.width, detectedInner.size.height)) *
+            0.5f;
+        const float middleMinor =
+            (std::min(detectedOuter.size.width, detectedOuter.size.height) +
+             std::min(detectedInner.size.width, detectedInner.size.height)) *
+            0.5f;
+        const float majorAxisAngle = ellipseMajorAxisAngle(detectedOuter);
+
+        result.outer = cv::RotatedRect(
+            middleCenter + halfCenterSeparation,
+            cv::Size2f(
+                middleMajor * physicalOuterRadius / physicalMidRadius,
+                middleMinor * physicalOuterRadius / physicalMidRadius),
+            majorAxisAngle);
+        result.inner = cv::RotatedRect(
+            middleCenter - halfCenterSeparation,
+            cv::Size2f(
+                middleMajor * physicalInnerRadius / physicalMidRadius,
+                middleMinor * physicalInnerRadius / physicalMidRadius),
+            majorAxisAngle);
+        result.correctedDiagnostics = validateProjectedRingPair(
+            result.inner,
+            result.outer,
+            physicalInnerRadius,
+            physicalOuterRadius);
+        result.valid = result.correctedDiagnostics.valid;
+        return result;
+    }
+
     struct BullPairDiagnostics
     {
         bool valid = false;

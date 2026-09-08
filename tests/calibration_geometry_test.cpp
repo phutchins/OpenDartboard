@@ -221,6 +221,22 @@ int main()
     passed &= require(!dilationInflatedTriplePair.valid &&
                           std::string(dilationInflatedTriplePair.reason) == "implausible_ring_width",
                       "a morphology-inflated triple band must not be reported ready");
+    const auto correctedInflatedTriplePair = board_geometry::correctProjectedRingPair(
+        dilationInflatedInnerTriple, plausibleOuterTriple, 99.0f, 107.0f);
+    passed &= require(correctedInflatedTriplePair.valid,
+                      "a connected morphology band must collapse to physical wire spacing");
+    passed &= require(
+        std::fabs(
+            correctedInflatedTriplePair.correctedDiagnostics.areaRatio -
+            correctedInflatedTriplePair.correctedDiagnostics.expectedAreaRatio) <
+            0.001f,
+        "corrected triple geometry must use the official inner/outer radius ratio");
+    passed &= require(
+        board_geometry::ellipseArea(correctedInflatedTriplePair.outer) <
+            board_geometry::ellipseArea(plausibleOuterTriple) &&
+            board_geometry::ellipseArea(correctedInflatedTriplePair.inner) >
+                board_geometry::ellipseArea(dilationInflatedInnerTriple),
+        "triple correction must move both inflated mask edges toward the centerline");
 
     const cv::RotatedRect displacedInnerTriple(
         cv::Point2f(620.0f, 475.0f), cv::Size2f(379.0f, 163.0f), 88.5f);

@@ -354,22 +354,23 @@ namespace ellipse_processing
                             continue;
 
                         const RotatedRect innerCandidate = fitEllipse(allTriplesContours[innerIndex]);
-                        const auto diagnostics = board_geometry::validateProjectedRingPair(
+                        const auto correction = board_geometry::correctProjectedRingPair(
                             innerCandidate,
                             outerCandidate,
                             99.0f,
                             107.0f);
+                        const auto &diagnostics = correction.sourceDiagnostics;
                         log_debug(
                             "TRIPLE_RING_CANDIDATE outer=" + log_string(outerIndex) +
                             " inner=" + log_string(innerIndex) +
-                            " valid=" + (diagnostics.valid ? string("true") : string("false")) +
-                            " area_ratio=" + log_string(diagnostics.areaRatio) +
+                            " valid=" + (correction.valid ? string("true") : string("false")) +
+                            " detected_area_ratio=" + log_string(diagnostics.areaRatio) +
                             " expected_area_ratio=" + log_string(diagnostics.expectedAreaRatio) +
                             " center_offset_ratio=" + log_string(diagnostics.centerOffsetRatio) +
                             " aspect_difference=" + log_string(diagnostics.aspectRatioDifference) +
                             " axis_difference_degrees=" + log_string(diagnostics.majorAxisAngleDifferenceDegrees) +
                             " reason=" + diagnostics.reason);
-                        if (!diagnostics.valid)
+                        if (!correction.valid)
                             continue;
 
                         const double quality =
@@ -380,9 +381,9 @@ namespace ellipse_processing
                         if (quality < bestQuality)
                         {
                             bestQuality = quality;
-                            bestDiagnostics = diagnostics;
-                            result.outerTripleEllipse = outerCandidate;
-                            result.innerTripleEllipse = innerCandidate;
+                            bestDiagnostics = correction.correctedDiagnostics;
+                            result.outerTripleEllipse = correction.outer;
+                            result.innerTripleEllipse = correction.inner;
                         }
                     }
                 }
