@@ -248,6 +248,32 @@ int main()
                            .valid,
                       "triple boundaries with implausibly separated centers must fail");
 
+    const cv::Point2f projectedBullCenter(622.0f, 448.0f);
+    const cv::Point2f perspectiveShift(0.0001f, -0.0020f);
+    const auto centerAtRadius = [&](float radius) {
+        return projectedBullCenter + perspectiveShift * (radius * radius);
+    };
+    const auto projectedBoard = board_geometry::estimateProjectedBoardModel(
+        cv::RotatedRect(centerAtRadius(162.0f), cv::Size2f(630.0f, 278.0f), 88.0f),
+        cv::RotatedRect(centerAtRadius(170.0f), cv::Size2f(660.0f, 292.0f), 88.0f),
+        cv::RotatedRect(centerAtRadius(99.0f), cv::Size2f(385.0f, 170.0f), 88.0f),
+        cv::RotatedRect(centerAtRadius(107.0f), cv::Size2f(416.0f, 184.0f), 88.0f),
+        frameSize);
+    passed &= require(projectedBoard.valid,
+                      "double and triple ring centers must define a projected board model");
+    passed &= require(cv::norm(projectedBoard.center - projectedBullCenter) < 0.2f,
+                      "projected ring centers must recover the physical bull center");
+    const auto modeledInnerBull = board_geometry::projectRingFromBoardModel(
+        projectedBoard, 6.35f);
+    const auto modeledOuterBull = board_geometry::projectRingFromBoardModel(
+        projectedBoard, 15.9f);
+    passed &= require(board_geometry::validateBullPair(
+                           modeledInnerBull,
+                           modeledOuterBull,
+                           outerDouble)
+                           .valid,
+                      "modeled bull rings must form a valid concentric pair");
+
     const auto plausibleBullPair = board_geometry::validateBullPair(
         cv::RotatedRect(cv::Point2f(622.0f, 448.0f), cv::Size2f(28.0f, 13.0f), 88.0f),
         cv::RotatedRect(cv::Point2f(622.5f, 448.5f), cv::Size2f(65.0f, 31.0f), 88.0f),

@@ -477,9 +477,38 @@ namespace ellipse_processing
             }
         }
 
-        // Both bull boundaries must be present and agree. Previously a single
-        // stray contour was enough to mark the camera ready and could move the
-        // calibration center tens of pixels away from the physical bull.
+        // Prefer a board-center and bull model derived from the two complete
+        // scoring rings. Small bull color contours are frequently fragmented
+        // or confused with nearby red lettering in oblique camera views.
+        const auto rawBullDiagnostics = board_geometry::validateBullPair(
+            result.innerBullEllipse,
+            result.outerBullEllipse,
+            result.outerDoubleEllipse);
+        const auto projectedBoard = board_geometry::estimateProjectedBoardModel(
+            result.innerDoubleEllipse,
+            result.outerDoubleEllipse,
+            result.innerTripleEllipse,
+            result.outerTripleEllipse,
+            originalFrame.size());
+        if (projectedBoard.valid)
+        {
+            result.innerBullEllipse = board_geometry::projectRingFromBoardModel(
+                projectedBoard, 6.35f);
+            result.outerBullEllipse = board_geometry::projectRingFromBoardModel(
+                projectedBoard, 15.9f);
+            log_info(
+                "BULL_RING_MODEL camera=" + log_string(camera_idx) +
+                " status=APPLIED center_x=" + log_string(projectedBoard.center.x) +
+                " center_y=" + log_string(projectedBoard.center.y) +
+                " raw_bull_status=" + (rawBullDiagnostics.valid ? string("VALID") : string("INVALID")));
+        }
+        else
+        {
+            log_warning(
+                "BULL_RING_MODEL camera=" + log_string(camera_idx) +
+                " status=UNAVAILABLE reason=" + projectedBoard.reason);
+        }
+
         const auto bullDiagnostics = board_geometry::validateBullPair(
             result.innerBullEllipse,
             result.outerBullEllipse,

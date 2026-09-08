@@ -248,6 +248,101 @@ namespace board_geometry
         return result;
     }
 
+    struct ProjectedBoardModel
+    {
+        bool valid = false;
+        cv::Point2f center{0.0f, 0.0f};
+        cv::Point2f centerShiftPerSquaredRadius{0.0f, 0.0f};
+        float referenceRadius = 0.0f;
+        float referenceMajorDiameter = 0.0f;
+        float referenceMinorDiameter = 0.0f;
+        float referenceAngleDegrees = 0.0f;
+        const char *reason = "invalid_ring_geometry";
+    };
+
+    // Under a projective camera view, centers of concentric circle images move
+    // approximately linearly with squared physical radius. Two independently
+    // fitted scoring rings therefore provide a stable estimate of the true
+    // board center even when a small bull color contour is fragmented.
+    inline ProjectedBoardModel estimateProjectedBoardModel(
+        const cv::RotatedRect &innerDouble,
+        const cv::RotatedRect &outerDouble,
+        const cv::RotatedRect &innerTriple,
+        const cv::RotatedRect &outerTriple,
+        const cv::Size &frameSize,
+        float innerDoubleRadius = 162.0f,
+        float outerDoubleRadius = 170.0f,
+        float innerTripleRadius = 99.0f,
+        float outerTripleRadius = 107.0f)
+    {
+        ProjectedBoardModel result;
+        const float doubleRadius = (innerDoubleRadius + outerDoubleRadius) * 0.5f;
+        const float tripleRadius = (innerTripleRadius + outerTripleRadius) * 0.5f;
+        const float denominator = doubleRadius * doubleRadius - tripleRadius * tripleRadius;
+        const cv::Point2f doubleCenter =
+            (innerDouble.center + outerDouble.center) * 0.5f;
+        const cv::Point2f tripleCenter =
+            (innerTriple.center + outerTriple.center) * 0.5f;
+        const float referenceMinorRadius =
+            std::min(outerDouble.size.width, outerDouble.size.height) * 0.5f;
+        if (frameSize.width <= 0 || frameSize.height <= 0 ||
+            ellipseArea(innerDouble) <= 0.0f || ellipseArea(outerDouble) <= 0.0f ||
+            ellipseArea(innerTriple) <= 0.0f || ellipseArea(outerTriple) <= 0.0f ||
+            !std::isfinite(denominator) || denominator <= 0.0f ||
+            !std::isfinite(referenceMinorRadius) || referenceMinorRadius <= 0.0f)
+            return result;
+
+        result.centerShiftPerSquaredRadius =
+            (doubleCenter - tripleCenter) / denominator;
+        result.center =
+            tripleCenter - result.centerShiftPerSquaredRadius * (tripleRadius * tripleRadius);
+        result.referenceRadius = tripleRadius;
+        result.referenceMajorDiameter =
+            (std::max(innerTriple.size.width, innerTriple.size.height) +
+             std::max(outerTriple.size.width, outerTriple.size.height)) *
+            0.5f;
+        result.referenceMinorDiameter =
+            (std::min(innerTriple.size.width, innerTriple.size.height) +
+             std::min(outerTriple.size.width, outerTriple.size.height)) *
+            0.5f;
+        result.referenceAngleDegrees = ellipseMajorAxisAngle(outerTriple);
+
+        if (!std::isfinite(result.center.x) || !std::isfinite(result.center.y) ||
+            result.center.x < 0.0f || result.center.x >= frameSize.width ||
+            result.center.y < 0.0f || result.center.y >= frameSize.height)
+        {
+            result.reason = "center_outside_frame";
+            return result;
+        }
+        if (cv::norm(result.center - tripleCenter) > referenceMinorRadius * 0.50f)
+        {
+            result.reason = "extrapolation_exceeds_bound";
+            return result;
+        }
+
+        result.valid = true;
+        result.reason = "valid";
+        return result;
+    }
+
+    inline cv::RotatedRect projectRingFromBoardModel(
+        const ProjectedBoardModel &model,
+        float physicalRadius)
+    {
+        if (!model.valid || !std::isfinite(physicalRadius) || physicalRadius <= 0.0f ||
+            model.referenceRadius <= 0.0f)
+            return cv::RotatedRect();
+
+        const float scale = physicalRadius / model.referenceRadius;
+        return cv::RotatedRect(
+            model.center +
+                model.centerShiftPerSquaredRadius * (physicalRadius * physicalRadius),
+            cv::Size2f(
+                model.referenceMajorDiameter * scale,
+                model.referenceMinorDiameter * scale),
+            model.referenceAngleDegrees);
+    }
+
     struct BullPairDiagnostics
     {
         bool valid = false;
