@@ -161,6 +161,29 @@ int main()
     passed &= require(ambiguous.layout == board_geometry::ClipLayout::UNKNOWN,
                       "an intermediate clip balance must remain unknown");
 
+    const cv::RotatedRect uprightEllipse(center, cv::Size2f(600.0f, 300.0f), 0.0f);
+    std::vector<cv::Point2f> uprightWires;
+    for (int index = 0; index < 20; ++index)
+    {
+        // Boundaries at -99 and -81 degrees put image north in the center of
+        // the upright 20 sector.
+        uprightWires.push_back(pointAtNormalizedAngle(
+            -99.0f + static_cast<float>(index) * 18.0f,
+            center,
+            uprightEllipse));
+    }
+    const auto uprightTwenty = board_geometry::findSectorForImageDirection(
+        cv::Point2f(0.0f, -1.0f), uprightWires, center, uprightEllipse);
+    passed &= require(uprightTwenty.valid && uprightTwenty.wireIndex == 0,
+                      "upright 20 must be recoverable without camera clip metadata");
+
+    std::vector<cv::Point2f> offCenterWires = uprightWires;
+    offCenterWires[0] = pointAtNormalizedAngle(-93.0f, center, uprightEllipse);
+    const auto offCenterTwenty = board_geometry::findSectorForImageDirection(
+        cv::Point2f(0.0f, -1.0f), offCenterWires, center, uprightEllipse);
+    passed &= require(!offCenterTwenty.valid,
+                      "a direction too close to a scoring wire must not establish orientation");
+
     const cv::Size frameSize(1280, 720);
     const cv::RotatedRect outerDouble(center, cv::Size2f(600.0f, 300.0f), 0.0f);
 

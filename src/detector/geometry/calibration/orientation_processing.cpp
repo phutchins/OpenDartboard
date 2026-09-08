@@ -176,64 +176,8 @@ namespace orientation_processing
         return clipWires;
     }
 
-    struct SectorMatch
-    {
-        int wireIndex = -1;
-        float widthDegrees = 0.0f;
-        float leftMarginDegrees = 0.0f;
-        float rightMarginDegrees = 0.0f;
-        bool valid = false;
-    };
-
-    // Find the sector containing an image-space direction after removing the
-    // ellipse's affine foreshortening. A valid match must put the direction
-    // near the center of a normal-width dartboard sector, not merely anywhere
-    // between two wires.
-    static SectorMatch findSectorForImageDirection(
-        const Point2f &imageDirection,
-        const DartboardCalibration &calib)
-    {
-        SectorMatch result;
-        if (!calib.wires.isValid || calib.wires.wireEndpoints.size() != 20)
-            return result;
-
-        const Point2f center(calib.bullCenter);
-        const float targetAngle = board_geometry::angleDegrees(
-            board_geometry::normalizeVector(imageDirection, calib.ellipses.outerDoubleEllipse));
-
-        for (size_t index = 0; index < calib.wires.wireEndpoints.size(); ++index)
-        {
-            float firstAngle = board_geometry::normalizedAngleDegrees(
-                calib.wires.wireEndpoints[index], center, calib.ellipses.outerDoubleEllipse);
-            float secondAngle = board_geometry::normalizedAngleDegrees(
-                calib.wires.wireEndpoints[(index + 1) % calib.wires.wireEndpoints.size()],
-                center,
-                calib.ellipses.outerDoubleEllipse);
-            if (secondAngle <= firstAngle)
-                secondAngle += 360.0f;
-
-            float adjustedTarget = targetAngle;
-            if (adjustedTarget < firstAngle)
-                adjustedTarget += 360.0f;
-            if (adjustedTarget < firstAngle || adjustedTarget > secondAngle)
-                continue;
-
-            result.wireIndex = static_cast<int>(index);
-            result.widthDegrees = secondAngle - firstAngle;
-            result.leftMarginDegrees = adjustedTarget - firstAngle;
-            result.rightMarginDegrees = secondAngle - adjustedTarget;
-            result.valid = result.widthDegrees >= 8.0f && result.widthDegrees <= 28.0f &&
-                           result.leftMarginDegrees >= 4.0f && result.rightMarginDegrees >= 4.0f &&
-                           std::fabs(result.leftMarginDegrees - result.rightMarginDegrees) <= 5.0f;
-            return result;
-        }
-        return result;
-    }
-
-    // Determine camera layout from real clip candidates. Absolute wedge
-    // orientation is only established for a balanced centered view, where the
-    // installed board's 20 sector is independently constrained to image north.
-    // A side bias identifies the camera role but cannot safely identify wedge 20.
+    // Determine optional camera-layout metadata from real clip candidates and
+    // establish the absolute wedge map independently from the wire lattice.
     static OrientationData determineCameraPosition(const vector<pair<Point2f, Point2f>> &clipWires, const DartboardCalibration &calib)
     {
         log_debug("=== DETERMINING CAMERA POSITION FOR CAMERA " + log_string(calib.camera_index) + " ===");
@@ -255,6 +199,28 @@ namespace orientation_processing
                   " left=" + to_string(clipLayout.leftCount) +
                   " right=" + to_string(clipLayout.rightCount) +
                   " horizontal_balance=" + to_string(clipLayout.horizontalBalance));
+
+        // A regulation board is installed with 20 at the top. Resolve that
+        // absolute direction from the independently validated wire lattice for
+        // every camera. Clip visibility may identify a camera's mounting role,
+        // but lighting around the number ring makes that signal intermittent.
+        const auto northSector = board_geometry::findSectorForImageDirection(
+            Point2f(0.0f, -1.0f),
+            calib.wires.wireEndpoints,
+            center,
+            calib.ellipses.outerDoubleEllipse);
+        log_debug("ORIENTATION_NORTH_SECTOR camera=" + to_string(calib.camera_index) +
+                  " wire=" + to_string(northSector.wireIndex) +
+                  " width_deg=" + to_string(northSector.widthDegrees) +
+                  " left_margin_deg=" + to_string(northSector.leftMarginDegrees) +
+                  " right_margin_deg=" + to_string(northSector.rightMarginDegrees) +
+                  " valid=" + (northSector.valid ? "true" : "false"));
+        if (northSector.valid)
+        {
+            result.wedge20WireIndex = northSector.wireIndex;
+            result.wedgeNumber = 20;
+            result.orientation = Point2f(0.0f, -1.0f);
+        }
 
         // Find the actual closest wire to image south. The old implementation
         // selected the smallest positive angle, which was not necessarily the
@@ -278,23 +244,9 @@ namespace orientation_processing
         switch (clipLayout.layout)
         {
         case board_geometry::ClipLayout::BALANCED:
-        {
             result.cameraPosition = CameraPosition::MIDDLE;
             result.isStarCamera = true;
-            const SectorMatch northSector = findSectorForImageDirection(Point2f(0.0f, -1.0f), calib);
-            log_debug("ORIENTATION_NORTH_SECTOR camera=" + to_string(calib.camera_index) +
-                      " wire=" + to_string(northSector.wireIndex) +
-                      " width_deg=" + to_string(northSector.widthDegrees) +
-                      " left_margin_deg=" + to_string(northSector.leftMarginDegrees) +
-                      " right_margin_deg=" + to_string(northSector.rightMarginDegrees) +
-                      " valid=" + (northSector.valid ? "true" : "false"));
-            if (northSector.valid)
-            {
-                result.wedge20WireIndex = northSector.wireIndex;
-                result.wedgeNumber = 20;
-            }
             break;
-        }
         case board_geometry::ClipLayout::LEFT_BIASED:
             result.cameraPosition = CameraPosition::BOTTOM;
             break;
@@ -305,11 +257,11 @@ namespace orientation_processing
             break;
         }
 
-        if (result.cameraPosition != CameraPosition::UNKNOWN && result.wedge20WireIndex < 0)
+        if (result.wedge20WireIndex < 0)
         {
             log_warning("ORIENTATION_STATUS camera=" + to_string(calib.camera_index) +
                         " status=DEGRADED role=" + cameraPositionToString(result.cameraPosition) +
-                        " reason=absolute_wedge20_not_validated");
+                        " reason=upright_wedge20_not_validated");
         }
 
         // Debug output

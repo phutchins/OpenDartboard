@@ -46,7 +46,7 @@ namespace orientation_processing
         int southWireIndex = -1;                                 // Index of the south wire for this camera
         int wedge20WireIndex = -1;                               // Index of the "20" segment wire
         float angleOffsetFromSouth = 0.0f;                       // Angle offset from the south
-        CameraPosition cameraPosition = CameraPosition::UNKNOWN; // Camera position (enum instead of string)
+        CameraPosition cameraPosition = CameraPosition::UNKNOWN; // Optional mounting-role diagnostic
         int wedgeNumber = -1;                                    // Validated orientation anchor wedge (currently 20)
         float avgClipWireCrossProduct = 0.0f;                    // Signed clip-layout diagnostic
     };

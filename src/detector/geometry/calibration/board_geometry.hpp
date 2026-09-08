@@ -868,4 +868,58 @@ namespace board_geometry
         }
         return result;
     }
+
+    struct SectorDirectionMatch
+    {
+        int wireIndex = -1;
+        float widthDegrees = 0.0f;
+        float leftMarginDegrees = 0.0f;
+        float rightMarginDegrees = 0.0f;
+        bool valid = false;
+    };
+
+    // Match a known board-space direction (for example the upright 20 sector)
+    // to the observed wire lattice. Camera mounting clips are useful metadata,
+    // but they must not be required to recover the board's absolute rotation.
+    template <typename WireContainer>
+    inline SectorDirectionMatch findSectorForImageDirection(
+        const cv::Point2f &imageDirection,
+        const WireContainer &wireEndpoints,
+        const cv::Point2f &center,
+        const cv::RotatedRect &outerDoubleEllipse)
+    {
+        SectorDirectionMatch result;
+        if (wireEndpoints.size() != 20 || cv::norm(imageDirection) <= 0.0f)
+            return result;
+
+        const float targetAngle = angleDegrees(
+            normalizeVector(imageDirection, outerDoubleEllipse));
+        for (size_t index = 0; index < wireEndpoints.size(); ++index)
+        {
+            float firstAngle = normalizedAngleDegrees(
+                wireEndpoints[index], center, outerDoubleEllipse);
+            float secondAngle = normalizedAngleDegrees(
+                wireEndpoints[(index + 1) % wireEndpoints.size()],
+                center,
+                outerDoubleEllipse);
+            if (secondAngle <= firstAngle)
+                secondAngle += 360.0f;
+
+            float adjustedTarget = targetAngle;
+            if (adjustedTarget < firstAngle)
+                adjustedTarget += 360.0f;
+            if (adjustedTarget < firstAngle || adjustedTarget > secondAngle)
+                continue;
+
+            result.wireIndex = static_cast<int>(index);
+            result.widthDegrees = secondAngle - firstAngle;
+            result.leftMarginDegrees = adjustedTarget - firstAngle;
+            result.rightMarginDegrees = secondAngle - adjustedTarget;
+            result.valid = result.widthDegrees >= 8.0f && result.widthDegrees <= 28.0f &&
+                           result.leftMarginDegrees >= 4.0f && result.rightMarginDegrees >= 4.0f &&
+                           std::fabs(result.leftMarginDegrees - result.rightMarginDegrees) <= 5.0f;
+            return result;
+        }
+        return result;
+    }
 } // namespace board_geometry
