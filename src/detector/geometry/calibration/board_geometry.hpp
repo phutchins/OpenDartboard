@@ -3,12 +3,354 @@
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <vector>
 
 namespace board_geometry
 {
+    // One projective mapping is the source of truth for every scoring ring,
+    // wire, overlay, and normalized dart position. Board coordinates are in
+    // millimetres with the bull at (0, 0), +x right, and +y down.
+    struct PlanarBoardTransform
+    {
+        std::array<float, 9> boardToImage{{1.0f, 0.0f, 0.0f,
+                                           0.0f, 1.0f, 0.0f,
+                                           0.0f, 0.0f, 1.0f}};
+        std::array<float, 9> imageToBoard{{1.0f, 0.0f, 0.0f,
+                                           0.0f, 1.0f, 0.0f,
+                                           0.0f, 0.0f, 1.0f}};
+        bool valid = false;
+        bool manual = false;
+        float ringResidualMeanPixels = std::numeric_limits<float>::infinity();
+        float ringResidualP90Pixels = std::numeric_limits<float>::infinity();
+        int residualSamples = 0;
+    };
+
+    inline bool projectPoint(
+        const std::array<float, 9> &matrix,
+        const cv::Point2f &input,
+        cv::Point2f &output)
+    {
+        const float denominator =
+            matrix[6] * input.x + matrix[7] * input.y + matrix[8];
+        if (!std::isfinite(denominator) || std::fabs(denominator) < 1.0e-6f)
+            return false;
+        output.x = (matrix[0] * input.x + matrix[1] * input.y + matrix[2]) / denominator;
+        output.y = (matrix[3] * input.x + matrix[4] * input.y + matrix[5]) / denominator;
+        return std::isfinite(output.x) && std::isfinite(output.y);
+    }
+
+    inline bool boardToImage(
+        const PlanarBoardTransform &transform,
+        const cv::Point2f &boardPoint,
+        cv::Point2f &imagePoint)
+    {
+        return transform.valid && projectPoint(transform.boardToImage, boardPoint, imagePoint);
+    }
+
+    inline bool imageToBoard(
+        const PlanarBoardTransform &transform,
+        const cv::Point2f &imagePoint,
+        cv::Point2f &boardPoint)
+    {
+        return transform.valid && projectPoint(transform.imageToBoard, imagePoint, boardPoint);
+    }
+
+    inline PlanarBoardTransform estimatePlanarBoardTransform(
+        const std::vector<cv::Point2f> &boardPoints,
+        const std::vector<cv::Point2f> &imagePoints,
+        bool manual = false)
+    {
+        PlanarBoardTransform result;
+        result.manual = manual;
+        if (boardPoints.size() < 4 || boardPoints.size() != imagePoints.size())
+            return result;
+
+        const cv::Mat homography = cv::findHomography(boardPoints, imagePoints, 0);
+        if (homography.empty() || homography.rows != 3 || homography.cols != 3)
+            return result;
+        cv::Mat homography64;
+        homography.convertTo(homography64, CV_64F);
+        const cv::Mat inverse = homography64.inv(cv::DECOMP_SVD);
+        if (inverse.empty())
+            return result;
+
+        for (int row = 0; row < 3; ++row)
+        {
+            for (int column = 0; column < 3; ++column)
+            {
+                const int index = row * 3 + column;
+                result.boardToImage[index] = static_cast<float>(homography64.at<double>(row, column));
+                result.imageToBoard[index] = static_cast<float>(inverse.at<double>(row, column));
+                if (!std::isfinite(result.boardToImage[index]) ||
+                    !std::isfinite(result.imageToBoard[index]))
+                    return PlanarBoardTransform();
+            }
+        }
+
+        cv::Point2f projectedCenter;
+        result.valid = projectPoint(result.boardToImage, cv::Point2f(0.0f, 0.0f), projectedCenter);
+        return result;
+    }
+
+    inline std::vector<cv::Point2f> projectedRingPoints(
+        const PlanarBoardTransform &transform,
+        float radius,
+        int sampleCount = 180)
+    {
+        std::vector<cv::Point2f> points;
+        if (!transform.valid || radius <= 0.0f || sampleCount < 8)
+            return points;
+        points.reserve(sampleCount);
+        for (int index = 0; index < sampleCount; ++index)
+        {
+            const float angle = static_cast<float>(2.0 * CV_PI * index / sampleCount);
+            cv::Point2f projected;
+            if (boardToImage(
+                    transform,
+                    cv::Point2f(radius * std::cos(angle), radius * std::sin(angle)),
+                    projected))
+                points.push_back(projected);
+        }
+        return points;
+    }
+
+    inline cv::RotatedRect fitProjectedRingEllipse(
+        const PlanarBoardTransform &transform,
+        float radius)
+    {
+        const auto points = projectedRingPoints(transform, radius, 180);
+        return points.size() >= 5 ? cv::fitEllipse(points) : cv::RotatedRect();
+    }
+
+    inline bool rayEllipseIntersectionDistance(
+        const cv::Point2f &origin,
+        const cv::Point2f &direction,
+        const cv::RotatedRect &ellipse,
+        float &distance)
+    {
+        const float major = ellipse.size.width * 0.5f;
+        const float minor = ellipse.size.height * 0.5f;
+        const float directionLength = cv::norm(direction);
+        if (major <= 0.0f || minor <= 0.0f || directionLength <= 0.0f)
+            return false;
+
+        const float rotation = -ellipse.angle * static_cast<float>(CV_PI) / 180.0f;
+        const float cosine = std::cos(rotation);
+        const float sine = std::sin(rotation);
+        const cv::Point2f normalizedDirection = direction / directionLength;
+        const cv::Point2f relative = origin - ellipse.center;
+        const cv::Point2f rotatedOrigin(
+            relative.x * cosine - relative.y * sine,
+            relative.x * sine + relative.y * cosine);
+        const cv::Point2f rotatedDirection(
+            normalizedDirection.x * cosine - normalizedDirection.y * sine,
+            normalizedDirection.x * sine + normalizedDirection.y * cosine);
+        const float a =
+            rotatedDirection.x * rotatedDirection.x / (major * major) +
+            rotatedDirection.y * rotatedDirection.y / (minor * minor);
+        const float b = 2.0f * (
+            rotatedOrigin.x * rotatedDirection.x / (major * major) +
+            rotatedOrigin.y * rotatedDirection.y / (minor * minor));
+        const float c =
+            rotatedOrigin.x * rotatedOrigin.x / (major * major) +
+            rotatedOrigin.y * rotatedOrigin.y / (minor * minor) - 1.0f;
+        const float discriminant = b * b - 4.0f * a * c;
+        if (a <= 0.0f || discriminant < 0.0f)
+            return false;
+        const float root = std::sqrt(discriminant);
+        const float first = (-b - root) / (2.0f * a);
+        const float second = (-b + root) / (2.0f * a);
+        distance = std::max(first, second);
+        if (distance <= 0.0f)
+            distance = std::min(first, second);
+        return std::isfinite(distance) && distance > 0.0f;
+    }
+
+    struct RingPairDiagnostics
+    {
+        bool valid = false;
+        float areaRatio = 0.0f;
+        float expectedAreaRatio = 0.0f;
+        float centerOffsetRatio = 0.0f;
+        float aspectRatioDifference = 0.0f;
+        float majorAxisAngleDifferenceDegrees = 0.0f;
+        const char *reason = "invalid_ellipse";
+    };
+
+    inline RingPairDiagnostics validateProjectedRingPair(
+        const cv::RotatedRect &inner,
+        const cv::RotatedRect &outer,
+        float expectedInnerRadius,
+        float expectedOuterRadius,
+        float minAreaRatio,
+        float maxAreaRatio,
+        float maxCenterOffsetRatio,
+        float maxAspectRatioDifference,
+        float maxAngleDifferenceDegrees);
+
+    struct RawRingRefinement
+    {
+        bool valid = false;
+        cv::RotatedRect inner;
+        cv::RotatedRect outer;
+        int innerPointCount = 0;
+        int outerPointCount = 0;
+        RingPairDiagnostics diagnostics;
+    };
+
+    inline bool maskOccupied(const cv::Mat &mask, const cv::Point2f &point)
+    {
+        const int x = cvRound(point.x);
+        const int y = cvRound(point.y);
+        if (x < 1 || y < 1 || x >= mask.cols - 1 || y >= mask.rows - 1)
+            return false;
+        int occupied = 0;
+        for (int row = y - 1; row <= y + 1; ++row)
+            for (int column = x - 1; column <= x + 1; ++column)
+                occupied += mask.at<uchar>(row, column) > 0 ? 1 : 0;
+        return occupied >= 3;
+    }
+
+    inline std::vector<cv::Point2f> refineRingBoundaryFromRawMask(
+        const cv::Mat &rawMask,
+        const cv::Point2f &boardCenter,
+        const cv::RotatedRect &seed,
+        bool enteringColor,
+        float searchWindowPixels = 36.0f,
+        float angleStepDegrees = 2.0f)
+    {
+        std::vector<cv::Point2f> points;
+        if (rawMask.empty() || rawMask.type() != CV_8UC1 ||
+            seed.size.width <= 0.0f || seed.size.height <= 0.0f)
+            return points;
+
+        for (float angleDegrees = 0.0f; angleDegrees < 360.0f; angleDegrees += angleStepDegrees)
+        {
+            const float angle = angleDegrees * static_cast<float>(CV_PI) / 180.0f;
+            const cv::Point2f direction(std::cos(angle), std::sin(angle));
+            float seedDistance = 0.0f;
+            if (!rayEllipseIntersectionDistance(boardCenter, direction, seed, seedDistance))
+                continue;
+
+            const int firstDistance = std::max(2, cvFloor(seedDistance - searchWindowPixels));
+            const int lastDistance = cvCeil(seedDistance + searchWindowPixels);
+            float bestDistance = -1.0f;
+            float bestError = std::numeric_limits<float>::infinity();
+            for (int distance = firstDistance; distance <= lastDistance; ++distance)
+            {
+                const bool before = maskOccupied(rawMask, boardCenter + direction * (distance - 2.0f));
+                const bool after = maskOccupied(rawMask, boardCenter + direction * (distance + 2.0f));
+                const bool transition = enteringColor ? (!before && after) : (before && !after);
+                if (!transition)
+                    continue;
+                const float error = std::fabs(static_cast<float>(distance) - seedDistance);
+                if (error < bestError)
+                {
+                    bestError = error;
+                    bestDistance = static_cast<float>(distance);
+                }
+            }
+            if (bestDistance > 0.0f)
+                points.push_back(boardCenter + direction * bestDistance);
+        }
+        return points;
+    }
+
+    inline RawRingRefinement refineRingPairFromRawMask(
+        const cv::Mat &rawMask,
+        const cv::Point2f &boardCenter,
+        const cv::RotatedRect &innerSeed,
+        const cv::RotatedRect &outerSeed,
+        float physicalInnerRadius,
+        float physicalOuterRadius,
+        float searchWindowPixels = 36.0f,
+        int minimumPoints = 60)
+    {
+        RawRingRefinement result;
+        const auto innerPoints = refineRingBoundaryFromRawMask(
+            rawMask, boardCenter, innerSeed, true, searchWindowPixels);
+        const auto outerPoints = refineRingBoundaryFromRawMask(
+            rawMask, boardCenter, outerSeed, false, searchWindowPixels);
+        result.innerPointCount = static_cast<int>(innerPoints.size());
+        result.outerPointCount = static_cast<int>(outerPoints.size());
+        if (result.innerPointCount < minimumPoints || result.outerPointCount < minimumPoints)
+            return result;
+        result.inner = cv::fitEllipse(innerPoints);
+        result.outer = cv::fitEllipse(outerPoints);
+        result.diagnostics = validateProjectedRingPair(
+            result.inner,
+            result.outer,
+            physicalInnerRadius,
+            physicalOuterRadius,
+            0.72f,
+            0.96f,
+            0.22f,
+            0.14f,
+            14.0f);
+        result.valid = result.diagnostics.valid;
+        return result;
+    }
+
+    struct RingEdgeResidual
+    {
+        bool valid = false;
+        float meanPixels = std::numeric_limits<float>::infinity();
+        float p90Pixels = std::numeric_limits<float>::infinity();
+        int samples = 0;
+    };
+
+    inline RingEdgeResidual measureRingEdgeResidual(
+        const cv::Mat &rawMask,
+        const PlanarBoardTransform &transform,
+        float maximumMeanPixels = 5.0f,
+        float maximumP90Pixels = 10.0f)
+    {
+        RingEdgeResidual result;
+        if (rawMask.empty() || rawMask.type() != CV_8UC1 || !transform.valid)
+            return result;
+
+        cv::Mat edgeMask;
+        cv::morphologyEx(
+            rawMask,
+            edgeMask,
+            cv::MORPH_GRADIENT,
+            cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
+        cv::Mat inverseEdges;
+        cv::threshold(edgeMask, inverseEdges, 0, 255, cv::THRESH_BINARY_INV);
+        cv::Mat distances;
+        cv::distanceTransform(inverseEdges, distances, cv::DIST_L2, 3);
+
+        std::vector<float> samples;
+        for (const float radius : {99.0f, 107.0f, 162.0f, 170.0f})
+        {
+            for (const auto &point : projectedRingPoints(transform, radius, 180))
+            {
+                const int x = cvRound(point.x);
+                const int y = cvRound(point.y);
+                if (x < 0 || y < 0 || x >= distances.cols || y >= distances.rows)
+                    continue;
+                const float distance = distances.at<float>(y, x);
+                if (std::isfinite(distance))
+                    samples.push_back(distance);
+            }
+        }
+        result.samples = static_cast<int>(samples.size());
+        if (samples.size() < 500)
+            return result;
+        std::sort(samples.begin(), samples.end());
+        double total = 0.0;
+        for (float sample : samples)
+            total += sample;
+        result.meanPixels = static_cast<float>(total / samples.size());
+        result.p90Pixels = samples[static_cast<size_t>(0.90 * (samples.size() - 1))];
+        result.valid = result.meanPixels <= maximumMeanPixels &&
+                       result.p90Pixels <= maximumP90Pixels;
+        return result;
+    }
+
     enum class BullCenterSource
     {
         NONE,
@@ -52,17 +394,6 @@ namespace board_geometry
                ellipse.center.x >= 0.0f && ellipse.center.x < frameSize.width &&
                ellipse.center.y >= 0.0f && ellipse.center.y < frameSize.height;
     }
-
-    struct RingPairDiagnostics
-    {
-        bool valid = false;
-        float areaRatio = 0.0f;
-        float expectedAreaRatio = 0.0f;
-        float centerOffsetRatio = 0.0f;
-        float aspectRatioDifference = 0.0f;
-        float majorAxisAngleDifferenceDegrees = 0.0f;
-        const char *reason = "invalid_ellipse";
-    };
 
     inline float ellipseArea(const cv::RotatedRect &ellipse)
     {

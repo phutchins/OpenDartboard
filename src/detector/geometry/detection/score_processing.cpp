@@ -7,6 +7,7 @@
 #include "../calibration/geometry_calibration.hpp"
 #include "../calibration/board_geometry.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -63,48 +64,10 @@ namespace score_processing
     {
         if (!geometry_calibration::hasValidGeometry(calib) || !geometry_calibration::hasValidOrientation(calib))
             return false;
-
-        const RotatedRect &outer_double = calib.ellipses.outerDoubleEllipse;
-        const float radius_x = outer_double.size.width / 2.0f;
-        const float radius_y = outer_double.size.height / 2.0f;
-        if (radius_x <= 0.0f || radius_y <= 0.0f)
+        Point2f boardPosition;
+        if (!board_geometry::imageToBoard(calib.boardTransform, pixel, boardPosition))
             return false;
-
-        const float angle = -outer_double.angle * static_cast<float>(CV_PI) / 180.0f;
-        const float cos_angle = cos(angle);
-        const float sin_angle = sin(angle);
-
-        const auto normalize_vector = [&](const Point2f &point) {
-            const Point2f relative = point - Point2f(calib.bullCenter);
-            const Point2f rotated(
-                relative.x * cos_angle - relative.y * sin_angle,
-                relative.x * sin_angle + relative.y * cos_angle);
-            return Point2f(rotated.x / radius_x, rotated.y / radius_y);
-        };
-
-        const int wedge20_wire = calib.orientation.wedge20WireIndex;
-        const int next_wire = (wedge20_wire + 1) % static_cast<int>(calib.wires.wireEndpoints.size());
-        Point2f boundary1 = normalize_vector(calib.wires.wireEndpoints[wedge20_wire]);
-        Point2f boundary2 = normalize_vector(calib.wires.wireEndpoints[next_wire]);
-        const float boundary1_length = norm(boundary1);
-        const float boundary2_length = norm(boundary2);
-        if (boundary1_length <= 0.0f || boundary2_length <= 0.0f)
-            return false;
-
-        boundary1 /= boundary1_length;
-        boundary2 /= boundary2_length;
-        const Point2f wedge20_center = boundary1 + boundary2;
-        if (norm(wedge20_center) <= 0.0f)
-            return false;
-
-        const float wedge20_angle = atan2(wedge20_center.y, wedge20_center.x);
-        const float canonical_rotation = -static_cast<float>(CV_PI) / 2.0f - wedge20_angle;
-        const float canonical_cos = cos(canonical_rotation);
-        const float canonical_sin = sin(canonical_rotation);
-        const Point2f camera_normalized = normalize_vector(pixel);
-        normalized_position = Point2f(
-            camera_normalized.x * canonical_cos - camera_normalized.y * canonical_sin,
-            camera_normalized.x * canonical_sin + camera_normalized.y * canonical_cos);
+        normalized_position = boardPosition / 170.0f;
         return std::isfinite(normalized_position.x) && std::isfinite(normalized_position.y);
     }
 
@@ -143,43 +106,35 @@ namespace score_processing
             return Ring::MISS;
         }
 
-        if (calib.ellipses.hasValidBulls &&
-            isPointInEllipse(pixel, calib.ellipses.innerBullEllipse))
+        Point2f boardPosition;
+        if (!board_geometry::imageToBoard(calib.boardTransform, pixel, boardPosition))
+            return Ring::MISS;
+        const float radius = norm(boardPosition);
+
+        if (radius <= 6.35f)
         {
             log_debug("SCORE: Point in INNER BULL");
             return Ring::INNER_BULL;
         }
 
-        if (calib.ellipses.hasValidBulls &&
-            isPointInEllipse(pixel, calib.ellipses.outerBullEllipse))
+        if (radius <= 15.9f)
         {
             log_debug("SCORE: Point in OUTER BULL");
             return Ring::OUTER_BULL;
         }
 
-        bool in_inner_triple = calib.ellipses.hasValidTriples &&
-                               isPointInEllipse(pixel, calib.ellipses.innerTripleEllipse);
-        bool in_outer_triple = calib.ellipses.hasValidTriples &&
-                               isPointInEllipse(pixel, calib.ellipses.outerTripleEllipse);
-        bool in_inner_double = isPointInEllipse(pixel, calib.ellipses.innerDoubleEllipse);
-        bool in_outer_double = isPointInEllipse(pixel, calib.ellipses.outerDoubleEllipse);
-
-        log_debug("SCORE: Ellipse tests - Inner_T:" + log_string(in_inner_triple) +
-                  " Outer_T:" + log_string(in_outer_triple) +
-                  " Inner_D:" + log_string(in_inner_double) +
-                  " Outer_D:" + log_string(in_outer_double));
-
-        if (in_outer_double && !in_inner_double)
+        log_debug("SCORE: Canonical radius = " + log_string(radius) + "mm");
+        if (radius >= 162.0f && radius <= 170.0f)
         {
             log_debug("SCORE: Ring type = DOUBLE");
             return Ring::DOUBLE;
         }
-        if (in_outer_triple && !in_inner_triple)
+        if (radius >= 99.0f && radius <= 107.0f)
         {
             log_debug("SCORE: Ring type = TRIPLE");
             return Ring::TRIPLE;
         }
-        if (in_outer_double)
+        if (radius <= 170.0f)
         {
             log_debug("SCORE: Ring type = SINGLE");
             return Ring::SINGLE;
@@ -197,60 +152,21 @@ namespace score_processing
             return -1;
         }
 
-        Point2f center = Point2f(calib.bullCenter);
-        // Calculate angle from center to point
-        Point2f direction = pixel - center;
-        float point_angle = atan2(direction.y, direction.x);
-        if (point_angle < 0)
-            point_angle += 2 * CV_PI; // Normalize to 0-2π
-
-        log_debug("SCORE: Point angle = " + log_string(point_angle * 180.0f / CV_PI) + " degrees");
-
-        // Standard dartboard sequence starting from 20
-        vector<int> dartboard_numbers = {20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5};
-        int wire20_index = calib.orientation.wedge20WireIndex;
-
-        // Check each wedge by calculating its angular boundaries
-        for (int i = 0; i < 20; i++)
-        {
-            int wire1_index = (wire20_index + i) % calib.wires.wireEndpoints.size();
-            int wire2_index = (wire20_index + i + 1) % calib.wires.wireEndpoints.size();
-
-            Point2f wire1 = calib.wires.wireEndpoints[wire1_index];
-            Point2f wire2 = calib.wires.wireEndpoints[wire2_index];
-
-            // Calculate angles for both wire boundaries
-            Point2f dir1 = wire1 - center;
-            Point2f dir2 = wire2 - center;
-            float angle1 = atan2(dir1.y, dir1.x);
-            float angle2 = atan2(dir2.y, dir2.x);
-
-            if (angle1 < 0)
-                angle1 += 2 * CV_PI;
-            if (angle2 < 0)
-                angle2 += 2 * CV_PI;
-
-            // Ensure angle1 < angle2 (handle wraparound)
-            if (angle2 < angle1)
-                angle2 += 2 * CV_PI;
-
-            // Check if point angle is between the two wire angles
-            float test_angle = point_angle;
-            if (test_angle < angle1)
-                test_angle += 2 * CV_PI;
-
-            if (test_angle >= angle1 && test_angle <= angle2)
-            {
-                int number = dartboard_numbers[i];
-                log_debug("SCORE: Found wedge " + log_string(number) +
-                          " (angle1=" + log_string(angle1 * 180.0f / CV_PI) +
-                          ", angle2=" + log_string(angle2 * 180.0f / CV_PI) + ")");
-                return number;
-            }
-        }
-
-        log_debug("SCORE: No wedge found - this shouldn't happen");
-        return -1;
+        Point2f boardPosition;
+        if (!board_geometry::imageToBoard(calib.boardTransform, pixel, boardPosition))
+            return -1;
+        float angleDegrees = atan2(boardPosition.y, boardPosition.x) * 180.0f / static_cast<float>(CV_PI);
+        float fromFirstBoundary = angleDegrees - (-99.0f);
+        while (fromFirstBoundary < 0.0f)
+            fromFirstBoundary += 360.0f;
+        while (fromFirstBoundary >= 360.0f)
+            fromFirstBoundary -= 360.0f;
+        const int wedgeIndex = min(19, static_cast<int>(floor(fromFirstBoundary / 18.0f)));
+        const array<int, 20> dartboardNumbers{{20, 1, 18, 4, 13, 6, 10, 15, 2, 17,
+                                                3, 19, 7, 16, 8, 11, 14, 9, 12, 5}};
+        log_debug("SCORE: Canonical angle=" + log_string(angleDegrees) +
+                  " wedge=" + log_string(dartboardNumbers[wedgeIndex]));
+        return dartboardNumbers[wedgeIndex];
     }
 
     static string getScoreForRingAtPoint(

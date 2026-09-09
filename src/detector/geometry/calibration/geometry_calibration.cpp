@@ -1,7 +1,9 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <fstream>
 #include <numeric>
+#include <nlohmann/json.hpp>
 
 #include "utils.hpp"
 #include "geometry_calibration.hpp"
@@ -19,12 +21,275 @@
 
 using namespace cv;
 using namespace std;
+using json = nlohmann::json;
 
 namespace geometry_calibration
 {
+    namespace
+    {
+        constexpr float outerDoubleRadius = 170.0f;
+
+        Point2f canonicalPoint(float radius, float angleDegrees)
+        {
+            const float angle = angleDegrees * static_cast<float>(CV_PI) / 180.0f;
+            return Point2f(radius * cos(angle), radius * sin(angle));
+        }
+
+        Point2f ellipseIntersection(
+            const Point2f &center,
+            const Point2f &toward,
+            const RotatedRect &ellipse)
+        {
+            Point2f direction = toward - center;
+            const float length = norm(direction);
+            float distance = 0.0f;
+            if (length <= 0.0f ||
+                !board_geometry::rayEllipseIntersectionDistance(center, direction, ellipse, distance))
+                return Point2f(-1.0f, -1.0f);
+            return center + direction / length * distance;
+        }
+
+        void applyCanonicalGeometry(
+            DartboardCalibration &calibration,
+            const board_geometry::PlanarBoardTransform &transform,
+            int anchorWireIndex)
+        {
+            calibration.boardTransform = transform;
+            if (!transform.valid)
+                return;
+
+            Point2f imageCenter;
+            if (!board_geometry::boardToImage(transform, Point2f(0.0f, 0.0f), imageCenter))
+                return;
+            calibration.bullCenter = Point(cvRound(imageCenter.x), cvRound(imageCenter.y));
+            calibration.ellipses.innerBullEllipse = board_geometry::fitProjectedRingEllipse(transform, 6.35f);
+            calibration.ellipses.outerBullEllipse = board_geometry::fitProjectedRingEllipse(transform, 15.9f);
+            calibration.ellipses.innerTripleEllipse = board_geometry::fitProjectedRingEllipse(transform, 99.0f);
+            calibration.ellipses.outerTripleEllipse = board_geometry::fitProjectedRingEllipse(transform, 107.0f);
+            calibration.ellipses.innerDoubleEllipse = board_geometry::fitProjectedRingEllipse(transform, 162.0f);
+            calibration.ellipses.outerDoubleEllipse = board_geometry::fitProjectedRingEllipse(transform, 170.0f);
+            calibration.ellipses.hasValidBulls = true;
+            calibration.ellipses.hasValidTriples = true;
+            calibration.ellipses.hasValidDoubles = true;
+            calibration.ellipses.hasDetectedEllipses = true;
+
+            calibration.wires.isValid = true;
+            calibration.wires.hasInferredEndpoints = false;
+            for (int wireIndex = 0; wireIndex < 20; ++wireIndex)
+            {
+                const int canonicalIndex = (wireIndex - anchorWireIndex + 20) % 20;
+                Point2f endpoint;
+                board_geometry::boardToImage(
+                    transform,
+                    canonicalPoint(outerDoubleRadius, -99.0f + canonicalIndex * 18.0f),
+                    endpoint);
+                calibration.wires.wireEndpoints[wireIndex] = endpoint;
+            }
+        }
+
+        board_geometry::PlanarBoardTransform buildAutomaticTransform(
+            const DartboardCalibration &calibration,
+            const Mat &rawMask)
+        {
+            board_geometry::PlanarBoardTransform result;
+            if (!calibration.ellipses.hasValidDoubles ||
+                !calibration.ellipses.hasValidTriples ||
+                !calibration.wires.isValid)
+                return result;
+
+            const int anchorWireIndex = hasValidOrientation(calibration)
+                                            ? calibration.orientation.wedge20WireIndex
+                                            : 0;
+            const Point2f center(calibration.bullCenter);
+            const array<pair<float, const RotatedRect *>, 4> rings{{
+                {99.0f, &calibration.ellipses.innerTripleEllipse},
+                {107.0f, &calibration.ellipses.outerTripleEllipse},
+                {162.0f, &calibration.ellipses.innerDoubleEllipse},
+                {170.0f, &calibration.ellipses.outerDoubleEllipse},
+            }};
+            vector<Point2f> boardPoints{Point2f(0.0f, 0.0f)};
+            vector<Point2f> imagePoints{center};
+            for (int wireIndex = 0; wireIndex < 20; ++wireIndex)
+            {
+                const int canonicalIndex = (wireIndex - anchorWireIndex + 20) % 20;
+                const float angleDegrees = -99.0f + canonicalIndex * 18.0f;
+                for (const auto &ring : rings)
+                {
+                    const Point2f imagePoint = ellipseIntersection(
+                        center,
+                        calibration.wires.wireEndpoints[wireIndex],
+                        *ring.second);
+                    if (imagePoint.x < 0.0f || imagePoint.y < 0.0f)
+                        continue;
+                    boardPoints.push_back(canonicalPoint(ring.first, angleDegrees));
+                    imagePoints.push_back(imagePoint);
+                }
+            }
+
+            result = board_geometry::estimatePlanarBoardTransform(boardPoints, imagePoints, false);
+            const auto residual = board_geometry::measureRingEdgeResidual(rawMask, result);
+            result.ringResidualMeanPixels = residual.meanPixels;
+            result.ringResidualP90Pixels = residual.p90Pixels;
+            result.residualSamples = residual.samples;
+            result.valid = result.valid && residual.valid;
+            return result;
+        }
+
+        bool readLandmark(
+            const json &camera,
+            const char *name,
+            const Size &frameSize,
+            Point2f &point)
+        {
+            if (!camera.contains(name) || !camera[name].is_object())
+                return false;
+            const auto &value = camera[name];
+            if (!value.contains("x") || !value.contains("y") ||
+                !value["x"].is_number() || !value["y"].is_number())
+                return false;
+            point.x = value["x"].get<float>();
+            point.y = value["y"].get<float>();
+            return isfinite(point.x) && isfinite(point.y) &&
+                   point.x >= 0.0f && point.y >= 0.0f &&
+                   point.x < frameSize.width && point.y < frameSize.height;
+        }
+
+        bool applyManualOverride(
+            DartboardCalibration &calibration,
+            const Mat &rawMask,
+            const Size &frameSize)
+        {
+            ifstream file("calibration_overrides.json");
+            if (!file)
+                return false;
+            json document;
+            try
+            {
+                file >> document;
+            }
+            catch (const exception &error)
+            {
+                log_warning("CALIBRATION_OVERRIDE status=INVALID reason=json_parse_error detail=" + string(error.what()));
+                return false;
+            }
+
+            const string cameraKey = to_string(calibration.camera_index);
+            if (!document.contains("cameras") || !document["cameras"].is_object() ||
+                !document["cameras"].contains(cameraKey))
+                return false;
+            const auto &camera = document["cameras"][cameraKey];
+            Point2f center, north, east, south, west;
+            if (!readLandmark(camera, "center", frameSize, center) ||
+                !readLandmark(camera, "north", frameSize, north) ||
+                !readLandmark(camera, "east", frameSize, east) ||
+                !readLandmark(camera, "south", frameSize, south) ||
+                !readLandmark(camera, "west", frameSize, west))
+            {
+                log_warning("CALIBRATION_OVERRIDE camera=" + to_string(calibration.camera_index) +
+                            " status=INVALID reason=missing_or_out_of_frame_landmark");
+                return false;
+            }
+            if (norm(north - center) < 50.0f || norm(east - center) < 50.0f ||
+                norm(south - center) < 50.0f || norm(west - center) < 50.0f)
+            {
+                log_warning("CALIBRATION_OVERRIDE camera=" + to_string(calibration.camera_index) +
+                            " status=INVALID reason=landmarks_too_close");
+                return false;
+            }
+
+            const vector<Point2f> boardPoints{
+                Point2f(0.0f, 0.0f), Point2f(0.0f, -outerDoubleRadius),
+                Point2f(outerDoubleRadius, 0.0f), Point2f(0.0f, outerDoubleRadius),
+                Point2f(-outerDoubleRadius, 0.0f)};
+            const vector<Point2f> imagePoints{center, north, east, south, west};
+            auto transform = board_geometry::estimatePlanarBoardTransform(boardPoints, imagePoints, true);
+            if (!transform.valid)
+            {
+                log_warning("CALIBRATION_OVERRIDE camera=" + to_string(calibration.camera_index) +
+                            " status=INVALID reason=homography_failed");
+                return false;
+            }
+            const auto residual = board_geometry::measureRingEdgeResidual(rawMask, transform, 12.0f, 20.0f);
+            transform.ringResidualMeanPixels = residual.meanPixels;
+            transform.ringResidualP90Pixels = residual.p90Pixels;
+            transform.residualSamples = residual.samples;
+
+            calibration.orientation.camera_index = calibration.camera_index;
+            calibration.orientation.wedge20WireIndex = 0;
+            calibration.orientation.southWireIndex = 10;
+            calibration.orientation.wedgeNumber = 20;
+            calibration.orientation.orientation = Point2f(0.0f, -1.0f);
+            applyCanonicalGeometry(calibration, transform, 0);
+            log_info("CALIBRATION_OVERRIDE camera=" + to_string(calibration.camera_index) +
+                     " status=APPLIED residual_mean_px=" + to_string(transform.ringResidualMeanPixels) +
+                     " residual_p90_px=" + to_string(transform.ringResidualP90Pixels));
+            return true;
+        }
+
+        string buildCalibrationModelDetails(const DartboardCalibration &calibration)
+        {
+            const auto &transform = calibration.boardTransform;
+            Point2f center, north, east, south, west;
+            bool hasLandmarks = transform.residualSamples > 0 &&
+                                board_geometry::projectPoint(transform.boardToImage, Point2f(0.0f, 0.0f), center) &&
+                                board_geometry::projectPoint(transform.boardToImage, Point2f(0.0f, -outerDoubleRadius), north) &&
+                                board_geometry::projectPoint(transform.boardToImage, Point2f(outerDoubleRadius, 0.0f), east) &&
+                                board_geometry::projectPoint(transform.boardToImage, Point2f(0.0f, outerDoubleRadius), south) &&
+                                board_geometry::projectPoint(transform.boardToImage, Point2f(-outerDoubleRadius, 0.0f), west);
+
+            // A camera can identify the outer double and all numbered wires
+            // while still failing an inner-ring check. Export useful manual
+            // editor seeds from that independently detected geometry instead
+            // of forcing the user to begin from a generic rectangle.
+            if (!hasLandmarks && calibration.ellipses.hasValidDoubles &&
+                calibration.wires.isValid && hasValidOrientation(calibration))
+            {
+                center = Point2f(calibration.bullCenter);
+                const int anchor = calibration.orientation.wedge20WireIndex;
+                const auto sectorCenter = [&](int sectorOffset, Point2f &point) {
+                    const int first = (anchor + sectorOffset) % 20;
+                    const int second = (first + 1) % 20;
+                    const Point2f toward =
+                        (calibration.wires.wireEndpoints[first] +
+                         calibration.wires.wireEndpoints[second]) *
+                        0.5f;
+                    point = ellipseIntersection(
+                        center, toward, calibration.ellipses.outerDoubleEllipse);
+                    return point.x >= 0.0f && point.y >= 0.0f;
+                };
+                hasLandmarks = sectorCenter(0, north) &&
+                               sectorCenter(5, east) &&
+                               sectorCenter(10, south) &&
+                               sectorCenter(15, west);
+            }
+            return "CALIBRATION_MODEL camera=" + to_string(calibration.camera_index) +
+                   " source=" + (transform.manual ? string("MANUAL") : string("AUTO")) +
+                   " status=" + (transform.valid ? string("VALID") : string("INVALID")) +
+                   " residual_mean_px=" + to_string(transform.ringResidualMeanPixels) +
+                   " residual_p90_px=" + to_string(transform.ringResidualP90Pixels) +
+                   " residual_samples=" + to_string(transform.residualSamples) +
+                   " center_x=" + to_string(hasLandmarks ? center.x : -1.0f) +
+                   " center_y=" + to_string(hasLandmarks ? center.y : -1.0f) +
+                   " north_x=" + to_string(hasLandmarks ? north.x : -1.0f) +
+                   " north_y=" + to_string(hasLandmarks ? north.y : -1.0f) +
+                   " east_x=" + to_string(hasLandmarks ? east.x : -1.0f) +
+                   " east_y=" + to_string(hasLandmarks ? east.y : -1.0f) +
+                   " south_x=" + to_string(hasLandmarks ? south.x : -1.0f) +
+                   " south_y=" + to_string(hasLandmarks ? south.y : -1.0f) +
+                   " west_x=" + to_string(hasLandmarks ? west.x : -1.0f) +
+                   " west_y=" + to_string(hasLandmarks ? west.y : -1.0f);
+        }
+    }
+
+    string calibrationModelDetails(const DartboardCalibration &calibration)
+    {
+        return buildCalibrationModelDetails(calibration);
+    }
+
     bool hasValidGeometry(const DartboardCalibration &calibration)
     {
         return calibration.camera_index >= 0 &&
+               calibration.boardTransform.valid &&
                calibration.ellipses.hasValidDoubles &&
                calibration.wires.isValid;
     }
@@ -194,6 +459,17 @@ namespace geometry_calibration
                         " because wire detection is invalid");
         }
 
+        const int anchorWireIndex = hasValidOrientation(calibration)
+                                        ? calibration.orientation.wedge20WireIndex
+                                        : 0;
+        const auto automaticTransform = buildAutomaticTransform(calibration, masks.fullMask);
+        applyCanonicalGeometry(calibration, automaticTransform, anchorWireIndex);
+        applyManualOverride(calibration, masks.fullMask, orginalFrame.size());
+        if (calibration.boardTransform.valid)
+            log_info(calibrationModelDetails(calibration));
+        else
+            log_warning(calibrationModelDetails(calibration));
+
         return calibration;
     }
 
@@ -241,6 +517,10 @@ namespace geometry_calibration
 
             if (debugMode)
                 log_debug(status_details);
+            if (calibration.boardTransform.valid)
+                log_info(calibrationModelDetails(calibration));
+            else
+                log_warning(calibrationModelDetails(calibration));
 
             if (status == CalibrationStatus::DEGRADED)
             {

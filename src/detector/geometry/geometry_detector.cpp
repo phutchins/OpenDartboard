@@ -64,6 +64,16 @@ namespace
             if (bullQuality.valid)
                 score += 500.0 - bullQuality.centerDistancePixels;
         }
+        if (calibration.boardTransform.residualSamples > 0 &&
+            isfinite(calibration.boardTransform.ringResidualMeanPixels) &&
+            isfinite(calibration.boardTransform.ringResidualP90Pixels))
+        {
+            score += 2000.0 -
+                     calibration.boardTransform.ringResidualMeanPixels * 120.0 -
+                     calibration.boardTransform.ringResidualP90Pixels * 60.0;
+        }
+        if (calibration.boardTransform.manual && calibration.boardTransform.valid)
+            score += 5000.0;
         return score;
     }
 
@@ -205,7 +215,10 @@ namespace
                         {"orientation_valid", geometry_calibration::hasValidOrientation(calibration)},
                         {"camera_position", orientation_processing::cameraPositionToString(
                                                 calibration.orientation.cameraPosition)},
-                        {"bull_center", pointJson(Point2f(calibration.bullCenter))}};
+                        {"bull_center", pointJson(Point2f(calibration.bullCenter))},
+                        {"model_source", calibration.boardTransform.manual ? "manual" : "auto"},
+                        {"ring_residual_mean_px", calibration.boardTransform.ringResidualMeanPixels},
+                        {"ring_residual_p90_px", calibration.boardTransform.ringResidualP90Pixels}};
                 }
 
                 const auto *score_diagnostic = findScoreDiagnostic(score_result, static_cast<int>(i));
@@ -441,6 +454,10 @@ bool GeometryDetector::initialize(vector<VideoCapture> &cameras)
             " triples_valid=" + (calibration.ellipses.hasValidTriples ? "true" : "false") +
             " bulls_valid=" + (calibration.ellipses.hasValidBulls ? "true" : "false") +
             " selection=final");
+        if (calibration.boardTransform.valid)
+            log_info(geometry_calibration::calibrationModelDetails(calibration));
+        else
+            log_warning(geometry_calibration::calibrationModelDetails(calibration));
     }
     for (size_t camera_index = 0; camera_index < best_frames.size(); ++camera_index)
     {

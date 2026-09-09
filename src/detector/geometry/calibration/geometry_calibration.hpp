@@ -1,8 +1,10 @@
 #pragma once
 
 #include <opencv2/opencv.hpp>
+#include <string>
 #include <vector>
 
+#include "board_geometry.hpp"
 #include "ellipse_processing.hpp"
 #include "wire_processing.hpp"        // Include full definition for WireData
 #include "orientation_processing.hpp" // Include orientation data
@@ -28,6 +30,9 @@ struct DartboardCalibration
 
     // ORIENTATION: Dartboard rotation and "20" segment position
     orientation_processing::OrientationData orientation; // Where is the "20" segment?
+
+    // CANONICAL BOARD MODEL: the single mapping used for scoring and overlays.
+    board_geometry::PlanarBoardTransform boardTransform;
 };
 
 enum class CalibrationStatus
@@ -47,6 +52,7 @@ namespace geometry_calibration
     bool hasValidOrientation(const DartboardCalibration &calibration);
     CalibrationStatus getCalibrationStatus(const DartboardCalibration &calibration);
     const char *calibrationStatusToString(CalibrationStatus status);
+    std::string calibrationModelDetails(const DartboardCalibration &calibration);
 
     // Calibrate multiple cameras at once
     vector<DartboardCalibration> calibrateMultipleCameras(const vector<Mat> &frames, bool debugMode = false, int targetWidth = 640, int targetHeight = 480);

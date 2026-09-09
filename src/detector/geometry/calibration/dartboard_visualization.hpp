@@ -9,6 +9,7 @@
 
 // Include the calibration struct
 #include "geometry_calibration.hpp"
+#include "board_geometry.hpp"
 #include "utils.hpp"
 
 namespace dartboard_visualization
@@ -33,18 +34,31 @@ namespace dartboard_visualization
             return visFrame;
         }
 
-        // ===== DRAW DETECTED ELLIPSES =====
-        // Doubles ring (outermost) - THICK CYAN
-        cv::ellipse(visFrame, calib.ellipses.outerDoubleEllipse, cv::Scalar(255, 255, 0), 4);
-        cv::ellipse(visFrame, calib.ellipses.innerDoubleEllipse, cv::Scalar(255, 255, 0), 3);
-
-        // Triples ring - THICK GREEN
-        cv::ellipse(visFrame, calib.ellipses.outerTripleEllipse, cv::Scalar(0, 255, 0), 3);
-        cv::ellipse(visFrame, calib.ellipses.innerTripleEllipse, cv::Scalar(0, 255, 0), 3);
-
-        // Bull rings - THICK RED
-        cv::ellipse(visFrame, calib.ellipses.outerBullEllipse, cv::Scalar(0, 0, 255), 3);
-        cv::ellipse(visFrame, calib.ellipses.innerBullEllipse, cv::Scalar(0, 0, 255), 3);
+        // ===== DRAW THE SAME CANONICAL MODEL USED BY SCORING =====
+        const auto drawRing = [&](float radius, const cv::Scalar &color, int thickness,
+                                  const cv::RotatedRect &fallback) {
+            if (calib.boardTransform.valid)
+            {
+                const auto projected = board_geometry::projectedRingPoints(
+                    calib.boardTransform, radius, 240);
+                std::vector<cv::Point> pixels;
+                pixels.reserve(projected.size());
+                for (const auto &point : projected)
+                    pixels.emplace_back(cvRound(point.x), cvRound(point.y));
+                if (pixels.size() >= 3)
+                    cv::polylines(visFrame, pixels, true, color, thickness, cv::LINE_AA);
+            }
+            else if (fallback.size.width > 0.0f && fallback.size.height > 0.0f)
+            {
+                cv::ellipse(visFrame, fallback, color, thickness);
+            }
+        };
+        drawRing(170.0f, cv::Scalar(255, 255, 0), 4, calib.ellipses.outerDoubleEllipse);
+        drawRing(162.0f, cv::Scalar(255, 255, 0), 3, calib.ellipses.innerDoubleEllipse);
+        drawRing(107.0f, cv::Scalar(0, 255, 0), 3, calib.ellipses.outerTripleEllipse);
+        drawRing(99.0f, cv::Scalar(0, 255, 0), 3, calib.ellipses.innerTripleEllipse);
+        drawRing(15.9f, cv::Scalar(0, 0, 255), 3, calib.ellipses.outerBullEllipse);
+        drawRing(6.35f, cv::Scalar(0, 0, 255), 3, calib.ellipses.innerBullEllipse);
 
         // ===== DRAW ACTUAL DETECTED WIRES =====
         if (calib.wires.isValid && !calib.wires.wireEndpoints.empty())
@@ -183,8 +197,19 @@ namespace dartboard_visualization
             cv::putText(visFrame, orientationInfo, cv::Point(20, 160),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, orientationColor, 2);
 
+            if (calib.boardTransform.residualSamples > 0)
+            {
+                const std::string modelInfo =
+                    std::string(calib.boardTransform.manual ? "Model: MANUAL" : "Model: AUTO") +
+                    " | residual mean " + std::to_string(calib.boardTransform.ringResidualMeanPixels).substr(0, 4) +
+                    "px, p90 " + std::to_string(calib.boardTransform.ringResidualP90Pixels).substr(0, 4) + "px";
+                cv::putText(visFrame, modelInfo, cv::Point(20, 190),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.55,
+                            calib.boardTransform.valid ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
+            }
+
             // Perspective info
-            if (calib.ellipses.offsetMagnitude > 5)
+            if (calib.ellipses.offsetMagnitude > 5 && calib.boardTransform.residualSamples == 0)
             {
                 std::string offsetInfo = "Offset: " + std::to_string(int(calib.ellipses.offsetMagnitude)) + "px";
                 cv::Scalar offsetColor = cv::Scalar(0, 255, 255); // Yellow for moderate offset

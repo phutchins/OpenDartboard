@@ -489,6 +489,79 @@ namespace ellipse_processing
             result.innerBullEllipse,
             result.outerBullEllipse,
             result.outerDoubleEllipse);
+
+        // Morphology is useful for finding a ring, but it expands the colored
+        // band and can shift its midpoint. Use those ellipses only as seeds,
+        // then fit the final wire boundaries against the untouched binary
+        // color mask. A camera cannot become READY from generated geometry.
+        const auto seedBoard = board_geometry::estimateProjectedBoardModel(
+            result.innerDoubleEllipse,
+            result.outerDoubleEllipse,
+            result.innerTripleEllipse,
+            result.outerTripleEllipse,
+            originalFrame.size());
+        const Point2f rawRefinementCenter = seedBoard.valid
+                                                ? seedBoard.center
+                                                : Point2f(bullCenter);
+        if (result.hasValidDoubles)
+        {
+            const auto refinedDoubles = board_geometry::refineRingPairFromRawMask(
+                masks.fullMask,
+                rawRefinementCenter,
+                result.innerDoubleEllipse,
+                result.outerDoubleEllipse,
+                162.0f,
+                170.0f,
+                32.0f);
+            log_info(
+                "RAW_RING_REFINEMENT camera=" + log_string(camera_idx) +
+                " ring=double status=" + (refinedDoubles.valid ? string("VALID") : string("INVALID")) +
+                " inner_points=" + log_string(refinedDoubles.innerPointCount) +
+                " outer_points=" + log_string(refinedDoubles.outerPointCount) +
+                " area_ratio=" + log_string(refinedDoubles.diagnostics.areaRatio) +
+                " expected_area_ratio=" + log_string(refinedDoubles.diagnostics.expectedAreaRatio) +
+                " reason=" + refinedDoubles.diagnostics.reason);
+            if (refinedDoubles.valid)
+            {
+                result.innerDoubleEllipse = refinedDoubles.inner;
+                result.outerDoubleEllipse = refinedDoubles.outer;
+                result.validInnerPoints = refinedDoubles.innerPointCount;
+                result.validOuterPoints = refinedDoubles.outerPointCount;
+            }
+            else
+            {
+                result.hasValidDoubles = false;
+            }
+        }
+        if (result.hasValidTriples)
+        {
+            const auto refinedTriples = board_geometry::refineRingPairFromRawMask(
+                masks.fullMask,
+                rawRefinementCenter,
+                result.innerTripleEllipse,
+                result.outerTripleEllipse,
+                99.0f,
+                107.0f,
+                42.0f);
+            log_info(
+                "RAW_RING_REFINEMENT camera=" + log_string(camera_idx) +
+                " ring=triple status=" + (refinedTriples.valid ? string("VALID") : string("INVALID")) +
+                " inner_points=" + log_string(refinedTriples.innerPointCount) +
+                " outer_points=" + log_string(refinedTriples.outerPointCount) +
+                " area_ratio=" + log_string(refinedTriples.diagnostics.areaRatio) +
+                " expected_area_ratio=" + log_string(refinedTriples.diagnostics.expectedAreaRatio) +
+                " reason=" + refinedTriples.diagnostics.reason);
+            if (refinedTriples.valid)
+            {
+                result.innerTripleEllipse = refinedTriples.inner;
+                result.outerTripleEllipse = refinedTriples.outer;
+            }
+            else
+            {
+                result.hasValidTriples = false;
+            }
+        }
+
         const auto projectedBoard = board_geometry::estimateProjectedBoardModel(
             result.innerDoubleEllipse,
             result.outerDoubleEllipse,

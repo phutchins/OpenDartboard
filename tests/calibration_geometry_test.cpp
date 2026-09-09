@@ -311,5 +311,85 @@ int main()
     passed &= require(!falseBullPair.valid,
                       "a stray bull contour must not make calibration ready");
 
+    const std::vector<cv::Point2f> canonicalLandmarks{
+        {0.0f, 0.0f}, {0.0f, -170.0f}, {170.0f, 0.0f},
+        {0.0f, 170.0f}, {-170.0f, 0.0f}};
+    const std::vector<cv::Point2f> imageLandmarks{
+        {638.0f, 382.0f}, {610.0f, 92.0f}, {1110.0f, 350.0f},
+        {670.0f, 664.0f}, {176.0f, 410.0f}};
+    const auto canonicalTransform = board_geometry::estimatePlanarBoardTransform(
+        canonicalLandmarks, imageLandmarks, true);
+    passed &= require(canonicalTransform.valid,
+                      "five physical landmarks must define a board homography");
+    cv::Point2f projectedDart;
+    cv::Point2f recoveredDart;
+    passed &= require(
+        board_geometry::boardToImage(canonicalTransform, cv::Point2f(42.0f, -83.0f), projectedDart) &&
+            board_geometry::imageToBoard(canonicalTransform, projectedDart, recoveredDart) &&
+            cv::norm(recoveredDart - cv::Point2f(42.0f, -83.0f)) < 0.01f,
+        "board/image projection must round-trip a dart position");
+
+    cv::Mat syntheticMask = cv::Mat::zeros(frameSize, CV_8UC1);
+    const auto fillProjectedRing = [&](float innerRadius, float outerRadius) {
+        std::vector<cv::Point> outerPoints;
+        for (const auto &point : board_geometry::projectedRingPoints(canonicalTransform, outerRadius, 360))
+            outerPoints.emplace_back(cvRound(point.x), cvRound(point.y));
+        std::vector<cv::Point> innerPoints;
+        for (const auto &point : board_geometry::projectedRingPoints(canonicalTransform, innerRadius, 360))
+            innerPoints.emplace_back(cvRound(point.x), cvRound(point.y));
+        cv::fillPoly(syntheticMask, std::vector<std::vector<cv::Point>>{outerPoints}, cv::Scalar(255));
+        cv::fillPoly(syntheticMask, std::vector<std::vector<cv::Point>>{innerPoints}, cv::Scalar(0));
+    };
+    fillProjectedRing(162.0f, 170.0f);
+    fillProjectedRing(99.0f, 107.0f);
+    const auto trueResidual = board_geometry::measureRingEdgeResidual(
+        syntheticMask, canonicalTransform, 3.0f, 5.0f);
+    if (!trueResidual.valid || trueResidual.samples < 700)
+        std::cerr << "true residual: mean=" << trueResidual.meanPixels
+                  << " p90=" << trueResidual.p90Pixels
+                  << " samples=" << trueResidual.samples << std::endl;
+    passed &= require(trueResidual.valid && trueResidual.samples >= 700,
+                      "a transform on raw ring pixels must pass residual validation");
+
+    auto shiftedTransform = canonicalTransform;
+    shiftedTransform.boardToImage[2] += 18.0f;
+    const auto shiftedResidual = board_geometry::measureRingEdgeResidual(
+        syntheticMask, shiftedTransform, 3.0f, 5.0f);
+    if (shiftedResidual.valid || shiftedResidual.p90Pixels <= trueResidual.p90Pixels)
+        std::cerr << "shifted residual: mean=" << shiftedResidual.meanPixels
+                  << " p90=" << shiftedResidual.p90Pixels
+                  << " samples=" << shiftedResidual.samples << std::endl;
+    passed &= require(!shiftedResidual.valid && shiftedResidual.p90Pixels > trueResidual.p90Pixels,
+                      "an internally coherent but pixel-shifted model must not be READY");
+
+    cv::Point2f projectedCenter;
+    board_geometry::boardToImage(canonicalTransform, cv::Point2f(0.0f, 0.0f), projectedCenter);
+    auto tripleInnerSeed = board_geometry::fitProjectedRingEllipse(canonicalTransform, 99.0f);
+    auto tripleOuterSeed = board_geometry::fitProjectedRingEllipse(canonicalTransform, 107.0f);
+    tripleInnerSeed.size.width *= 0.93f;
+    tripleInnerSeed.size.height *= 0.93f;
+    tripleOuterSeed.size.width *= 1.07f;
+    tripleOuterSeed.size.height *= 1.07f;
+    const auto rawRefinement = board_geometry::refineRingPairFromRawMask(
+        syntheticMask,
+        projectedCenter,
+        tripleInnerSeed,
+        tripleOuterSeed,
+        99.0f,
+        107.0f,
+        32.0f);
+    if (!rawRefinement.valid || rawRefinement.innerPointCount < 100 ||
+        rawRefinement.outerPointCount < 100)
+        std::cerr << "raw refinement: valid=" << rawRefinement.valid
+                  << " inner=" << rawRefinement.innerPointCount
+                  << " outer=" << rawRefinement.outerPointCount
+                  << " reason=" << rawRefinement.diagnostics.reason
+                  << " ratio=" << rawRefinement.diagnostics.areaRatio
+                  << " expected=" << rawRefinement.diagnostics.expectedAreaRatio
+                  << std::endl;
+    passed &= require(rawRefinement.valid && rawRefinement.innerPointCount >= 100 &&
+                          rawRefinement.outerPointCount >= 100,
+                      "morphology seeds must snap back to raw triple-ring transitions");
+
     return passed ? 0 : 1;
 }
