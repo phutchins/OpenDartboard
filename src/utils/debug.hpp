@@ -54,6 +54,8 @@ namespace debug
         std::cout << "  --fps <fps>          Frames per second (default: 15)\n";
         std::cout << "  --detector <type>    Detector type: geometry, ai, custom (default: geometry)\n";
         std::cout << "  --motion-spike-threshold <ratio>  Motion ratio that starts an event (default: 0.08)\n";
+        std::cout << "  --motion-stability-frames <count> Consecutive settled frames before capture (default: 15)\n";
+        std::cout << "  --motion-cooldown-ms <ms>         Ignore interval after a completed event (default: 1000)\n";
         std::cout << "  --motion-low-threshold <ratio>    Motion ratio considered stable (default: 0.001)\n";
         std::cout << "  --motion-min-cameras <count>      Cameras required for an event (default: 2)\n";
         std::cout << "  --motion-pretrigger-activity-ratio <ratio>  Debug activity reporting floor (default: 0.005)\n";

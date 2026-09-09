@@ -329,6 +329,20 @@ int main()
             cv::norm(recoveredDart - cv::Point2f(42.0f, -83.0f)) < 0.01f,
         "board/image projection must round-trip a dart position");
 
+    cv::Point2f visibleTipImage;
+    cv::Point2f shapeCenterImage;
+    board_geometry::boardToImage(canonicalTransform, cv::Point2f(0.0f, -105.0f), visibleTipImage);
+    board_geometry::boardToImage(canonicalTransform, cv::Point2f(0.0f, -155.0f), shapeCenterImage);
+    const auto boardEntry = board_geometry::estimateBoardEntryPoint(
+        canonicalTransform, visibleTipImage, shapeCenterImage, 12.0f);
+    passed &= require(boardEntry.valid,
+                      "a visible barrel and shape center must define a board-entry estimate");
+    passed &= require(cv::norm(boardEntry.boardPoint - cv::Point2f(0.0f, -93.0f)) < 0.01f,
+                      "board-entry estimate must extend past the visible barrel toward the board");
+    passed &= require(std::fabs(cv::norm(boardEntry.visibleTipBoardPoint) - 105.0f) < 0.01f &&
+                          std::fabs(cv::norm(boardEntry.boardPoint) - 93.0f) < 0.01f,
+                      "a hidden point must move a false triple observation into the single bed");
+
     cv::Mat syntheticMask = cv::Mat::zeros(frameSize, CV_8UC1);
     const auto fillProjectedRing = [&](float innerRadius, float outerRadius) {
         std::vector<cv::Point> outerPoints;

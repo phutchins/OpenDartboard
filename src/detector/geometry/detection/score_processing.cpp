@@ -225,6 +225,7 @@ namespace score_processing
                 string score;
                 int camera_index;
                 float nearest_wire_distance;
+                Point2f scoring_position;
             };
             vector<CameraScoreCandidate> camera_scores;
             vector<Ring> ring_observations;
@@ -234,11 +235,32 @@ namespace score_processing
             for (size_t i = 0; i < camera_count; i++)
             {
                 log_debug("-------");
+                Point2f scoring_position = dart_result.camera_results[i].tip_position;
+                const auto board_entry = board_geometry::estimateBoardEntryPoint(
+                    calibrations[i].boardTransform,
+                    dart_result.camera_results[i].tip_position,
+                    dart_result.camera_results[i].center_position);
+                if (dart_result.camera_results[i].tip_found && board_entry.valid)
+                {
+                    scoring_position = board_entry.imagePoint;
+                    if (debug_mode)
+                    {
+                        log_debug(
+                            "BOARD_ENTRY_ESTIMATE camera=" + to_string(i) +
+                            " visible_radius_mm=" + to_string(norm(board_entry.visibleTipBoardPoint)) +
+                            " scoring_radius_mm=" + to_string(norm(board_entry.boardPoint)) +
+                            " extension_mm=" + to_string(board_entry.extensionMillimetres) +
+                            " raw_x=" + to_string(dart_result.camera_results[i].tip_position.x) +
+                            " raw_y=" + to_string(dart_result.camera_results[i].tip_position.y) +
+                            " scoring_x=" + to_string(scoring_position.x) +
+                            " scoring_y=" + to_string(scoring_position.y));
+                    }
+                }
                 if (debug_mode && dart_result.camera_results[i].tip_found)
                 {
                     logRingClassificationTelemetry(
                         i,
-                        dart_result.camera_results[i].tip_position,
+                        scoring_position,
                         calibrations[i]);
                 }
                 Ring ring = Ring::MISS;
@@ -246,7 +268,7 @@ namespace score_processing
                     geometry_calibration::hasCompleteRingGeometry(calibrations[i]))
                 {
                     ring = classifyRingAtPoint(
-                        dart_result.camera_results[i].tip_position,
+                        scoring_position,
                         calibrations[i]);
                     if (ring != Ring::MISS)
                         ring_observations.push_back(ring);
@@ -259,6 +281,10 @@ namespace score_processing
                 }
                 string score_test = getScoreForRingAtPoint(
                     ring,
+                    // Preserve the observed wedge direction. The extrapolated
+                    // board entry is intentionally used only for radial ring
+                    // classification because an off-plane shape centroid can
+                    // bend the mapped shaft axis tangentially.
                     dart_result.camera_results[i].tip_position,
                     calibrations[i]);
                 CameraScoreDiagnostic camera_diagnostic;
@@ -266,6 +292,15 @@ namespace score_processing
                 camera_diagnostic.tip_found = dart_result.camera_results[i].tip_found;
                 camera_diagnostic.ring = ringToString(ring);
                 camera_diagnostic.score = score_test;
+                camera_diagnostic.scoring_position = scoring_position;
+                if (board_entry.valid)
+                {
+                    camera_diagnostic.board_position_mm = board_entry.boardPoint;
+                    camera_diagnostic.board_entry_extrapolated = true;
+                    camera_diagnostic.visible_tip_radius_mm = norm(board_entry.visibleTipBoardPoint);
+                    camera_diagnostic.scoring_radius_mm = norm(board_entry.boardPoint);
+                    camera_diagnostic.tip_extension_mm = board_entry.extensionMillimetres;
+                }
                 log_debug("-------");
 
                 // print image
@@ -281,8 +316,11 @@ namespace score_processing
 
                     // just draw the point on the screen
                     Mat some_mat = background_frames[i].clone();
-                    circle(some_mat, dart_result.camera_results[i].tip_position, 5, Scalar(0, 255, 0), -1);
-                    putText(some_mat, display_score, dart_result.camera_results[i].tip_position + Point2f(10, 10),
+                    circle(some_mat, dart_result.camera_results[i].tip_position, 4, Scalar(0, 215, 255), 2);
+                    if (board_entry.valid)
+                        line(some_mat, dart_result.camera_results[i].tip_position, scoring_position, Scalar(0, 215, 255), 2);
+                    circle(some_mat, scoring_position, 5, Scalar(0, 255, 0), -1);
+                    putText(some_mat, display_score, scoring_position + Point2f(10, 10),
                             FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0), 1);
                     system("mkdir -p debug_frames/score_processing");
                     imwrite("debug_frames/score_processing/point_on_screen" + to_string(i) + ".jpg", some_mat);
@@ -296,11 +334,11 @@ namespace score_processing
                     if (score_test != "BULL" && score_test != "OUTER")
                     {
                         nearest_wire_distance = board_geometry::nearestWireDistancePixels(
-                            dart_result.camera_results[i].tip_position,
+                            scoring_position,
                             Point2f(calibrations[i].bullCenter),
                             calibrations[i].wires.wireEndpoints);
                     }
-                    camera_scores.push_back({score_test, static_cast<int>(i), nearest_wire_distance});
+                    camera_scores.push_back({score_test, static_cast<int>(i), nearest_wire_distance, scoring_position});
                     camera_diagnostic.nearest_wire_distance = nearest_wire_distance;
                     log_debug("SCORE_BOUNDARY_PROXIMITY camera=" + to_string(i) +
                               " distance_px=" + to_string(nearest_wire_distance));
@@ -414,7 +452,14 @@ namespace score_processing
                 }
 
                 result.score = final_score;
-                result.pixel_position = dart_result.camera_results[best_camera].tip_position;
+                const auto selected_candidate = find_if(
+                    camera_scores.begin(), camera_scores.end(),
+                    [best_camera](const CameraScoreCandidate &candidate) {
+                        return candidate.camera_index == best_camera;
+                    });
+                result.pixel_position = selected_candidate != camera_scores.end()
+                                            ? selected_candidate->scoring_position
+                                            : dart_result.camera_results[best_camera].tip_position;
                 result.center_position = dart_result.camera_results[best_camera].center_position;
                 result.has_dartboard_position = normalizeDartboardPosition(result.pixel_position, calibrations[best_camera], result.dartboard_position);
                 if (!result.has_dartboard_position)
@@ -456,12 +501,19 @@ namespace score_processing
                             !geometry_calibration::hasValidOrientation(calibrations[i]))
                             continue;
                         Point2f normalized_position;
+                        Point2f miss_position = dart_result.camera_results[i].tip_position;
+                        const auto miss_board_entry = board_geometry::estimateBoardEntryPoint(
+                            calibrations[i].boardTransform,
+                            dart_result.camera_results[i].tip_position,
+                            dart_result.camera_results[i].center_position);
+                        if (miss_board_entry.valid)
+                            miss_position = miss_board_entry.imagePoint;
                         if (!normalizeDartboardPosition(
-                                dart_result.camera_results[i].tip_position,
+                                miss_position,
                                 calibrations[i],
                                 normalized_position))
                             continue;
-                        result.pixel_position = dart_result.camera_results[i].tip_position;
+                        result.pixel_position = miss_position;
                         result.center_position = dart_result.camera_results[i].center_position;
                         result.dartboard_position = normalized_position;
                         result.has_dartboard_position = true;

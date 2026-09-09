@@ -45,7 +45,10 @@ namespace dart_processing
         double supporting_change_ratio_percent = 0.03;
 
         // Statbility frames
-        int stability_frames = 6; // Frames needed to confirm state change / (3 cameras * 2 frames per camera)
+        // Motion processing has already required a stable board. Two frames
+        // are enough to suppress sensor noise without merging a rapid next
+        // dart into the current event.
+        int stability_frames = 2;
     };
 
     // Per-camera detection result

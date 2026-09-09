@@ -228,7 +228,16 @@ namespace
                 {
                     camera["classification"] = {
                         {"ring", score_diagnostic->ring},
-                        {"score", score_diagnostic->score}};
+                        {"score", score_diagnostic->score},
+                        {"scoring_point", pointJson(score_diagnostic->scoring_position)},
+                        {"board_entry_extrapolated", score_diagnostic->board_entry_extrapolated},
+                        {"tip_extension_mm", score_diagnostic->tip_extension_mm}};
+                    if (score_diagnostic->board_entry_extrapolated)
+                    {
+                        camera["classification"]["board_position_mm"] = pointJson(score_diagnostic->board_position_mm);
+                        camera["classification"]["visible_tip_radius_mm"] = score_diagnostic->visible_tip_radius_mm;
+                        camera["classification"]["scoring_radius_mm"] = score_diagnostic->scoring_radius_mm;
+                    }
                     if (isfinite(score_diagnostic->nearest_wire_distance))
                         camera["classification"]["nearest_wire_distance_px"] = score_diagnostic->nearest_wire_distance;
                     else
@@ -254,7 +263,16 @@ namespace
                     {
                         line(overlay, detection.center_position, detection.tip_position, Scalar(0, 215, 255), 2);
                         circle(overlay, detection.center_position, 6, Scalar(0, 215, 255), 2);
-                        circle(overlay, detection.tip_position, 8, Scalar(0, 0, 255), -1);
+                        circle(overlay, detection.tip_position, 7, Scalar(0, 215, 255), 2);
+                        if (score_diagnostic != nullptr && score_diagnostic->board_entry_extrapolated)
+                        {
+                            line(overlay, detection.tip_position, score_diagnostic->scoring_position, Scalar(0, 255, 0), 2);
+                            circle(overlay, score_diagnostic->scoring_position, 8, Scalar(0, 0, 255), -1);
+                        }
+                        else
+                        {
+                            circle(overlay, detection.tip_position, 8, Scalar(0, 0, 255), -1);
+                        }
                     }
                     const string camera_score = score_diagnostic == nullptr
                                                     ? "NO TIP"

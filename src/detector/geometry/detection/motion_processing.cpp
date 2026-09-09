@@ -34,6 +34,25 @@ namespace motion_processing
     static double pretrigger_peak_average = 0.0;
     static bool pretrigger_activity_seen = false;
 
+    // Continuous JPEG encoding is useful for a human-facing debug stream but
+    // must not delay the scoring loop enough to swallow a quick next dart.
+    static chrono::steady_clock::time_point last_debug_frame_time;
+    static bool debug_frame_time_initialized = false;
+
+    static bool debugFrameDue(chrono::steady_clock::time_point now)
+    {
+        constexpr int debugIntervalMilliseconds = 250;
+        if (!debug_frame_time_initialized ||
+            chrono::duration_cast<chrono::milliseconds>(now - last_debug_frame_time).count() >=
+                debugIntervalMilliseconds)
+        {
+            last_debug_frame_time = now;
+            debug_frame_time_initialized = true;
+            return true;
+        }
+        return false;
+    }
+
     static string formatCameraRatios(const vector<MotionData> &motion_data)
     {
         ostringstream output;
@@ -150,6 +169,7 @@ namespace motion_processing
             {
                 motion_streamer = make_unique<streamer>(8082, 15);
                 motion2_streamer = make_unique<streamer>(8083, 15);
+                system("mkdir -p debug_frames/motion_processing");
             }
 
             // Return no motion on first frame
@@ -160,6 +180,8 @@ namespace motion_processing
         vector<MotionData> motion_data(current_frames.size());
         vector<Mat> motion_viz_frames;
         vector<Mat> motion_viz_frames2;
+
+        const bool write_debug_frame = debug_mode && debugFrameDue(chrono::steady_clock::now());
 
         // Motion detection for each camera
         for (size_t i = 0; i < current_frames.size() && i < previous_frames.size(); i++)
@@ -189,9 +211,8 @@ namespace motion_processing
             morphologyEx(thresh, thresh, MORPH_CLOSE, kernel);
 
             // Debug: Save motion detection images
-            if (debug_mode)
+            if (write_debug_frame)
             {
-                system("mkdir -p debug_frames/motion_processing");
                 imwrite("debug_frames/motion_processing/diff_cam_" + to_string(i) + ".jpg", diff);
                 imwrite("debug_frames/motion_processing/thresh_cam_" + to_string(i) + ".jpg", thresh);
 
@@ -220,7 +241,7 @@ namespace motion_processing
             previous_frames[i] = current_frames[i].clone();
         }
 
-        if (debug_mode)
+        if (write_debug_frame && !motion_viz_frames.empty() && !motion_viz_frames2.empty())
         {
             Mat combined_motion = debug::createCombinedFrame(motion_viz_frames, "diff");
             motion_streamer->push(combined_motion);

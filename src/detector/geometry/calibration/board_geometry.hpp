@@ -58,6 +58,55 @@ namespace board_geometry
         return transform.valid && projectPoint(transform.imageToBoard, imagePoint, boardPoint);
     }
 
+    struct BoardEntryEstimate
+    {
+        bool valid = false;
+        cv::Point2f imagePoint{-1.0f, -1.0f};
+        cv::Point2f boardPoint{-1.0f, -1.0f};
+        cv::Point2f visibleTipBoardPoint{-1.0f, -1.0f};
+        float extensionMillimetres = 0.0f;
+    };
+
+    // The threshold mask often ends at the visible barrel rather than the
+    // board surface: the thin metal point is dark, partly buried, and easily
+    // lost against a dark wedge. Continue the observed dart axis a short,
+    // physical distance in canonical board space to estimate its entry point.
+    // Wedge selection can still use the raw observation; this estimate is most
+    // useful for avoiding false double/triple classifications.
+    inline BoardEntryEstimate estimateBoardEntryPoint(
+        const PlanarBoardTransform &transform,
+        const cv::Point2f &visibleTip,
+        const cv::Point2f &shapeCenter,
+        float extensionMillimetres = 12.0f)
+    {
+        BoardEntryEstimate result;
+        if (!transform.valid || !std::isfinite(extensionMillimetres) ||
+            extensionMillimetres < 0.0f)
+            return result;
+
+        cv::Point2f centerBoardPoint;
+        if (!imageToBoard(transform, visibleTip, result.visibleTipBoardPoint) ||
+            !imageToBoard(transform, shapeCenter, centerBoardPoint))
+            return result;
+
+        cv::Point2f boardwardAxis = result.visibleTipBoardPoint - centerBoardPoint;
+        const float axisLength = cv::norm(boardwardAxis);
+        if (!std::isfinite(axisLength) || axisLength < 1.0f)
+            return result;
+
+        result.boardPoint = result.visibleTipBoardPoint +
+                            boardwardAxis * (extensionMillimetres / axisLength);
+        if (!boardToImage(transform, result.boardPoint, result.imagePoint))
+            return result;
+
+        result.extensionMillimetres = extensionMillimetres;
+        result.valid = std::isfinite(result.imagePoint.x) &&
+                       std::isfinite(result.imagePoint.y) &&
+                       std::isfinite(result.boardPoint.x) &&
+                       std::isfinite(result.boardPoint.y);
+        return result;
+    }
+
     inline PlanarBoardTransform estimatePlanarBoardTransform(
         const std::vector<cv::Point2f> &boardPoints,
         const std::vector<cv::Point2f> &imagePoints,

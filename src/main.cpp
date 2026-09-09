@@ -38,6 +38,8 @@ int main(int argc, char **argv)
   motion_params.spike_threshold = getArg(argc, argv, "--motion-spike-threshold", motion_params.spike_threshold);
   motion_params.low_threshold = getArg(argc, argv, "--motion-low-threshold", motion_params.low_threshold);
   motion_params.min_cameras_for_event = getArg(argc, argv, "--motion-min-cameras", motion_params.min_cameras_for_event);
+  motion_params.stability_frames = getArg(argc, argv, "--motion-stability-frames", motion_params.stability_frames);
+  motion_params.cooldown_period_ms = getArg(argc, argv, "--motion-cooldown-ms", motion_params.cooldown_period_ms);
   motion_params.pretrigger_activity_ratio = getArg(
       argc, argv, "--motion-pretrigger-activity-ratio", motion_params.pretrigger_activity_ratio);
   motion_params.processing_fps = fps;
@@ -45,10 +47,13 @@ int main(int argc, char **argv)
   if (!std::isfinite(motion_params.spike_threshold) || motion_params.spike_threshold <= 0.0 || motion_params.spike_threshold > 1.0 ||
       !std::isfinite(motion_params.low_threshold) || motion_params.low_threshold < 0.0 || motion_params.low_threshold >= motion_params.spike_threshold ||
       !motion_processing::isValidPretriggerActivityRatio(motion_params.pretrigger_activity_ratio) ||
+      !motion_processing::isValidTimingConfiguration(
+          motion_params.stability_frames, motion_params.cooldown_period_ms) ||
       motion_params.min_cameras_for_event < 1)
   {
     cerr << "Invalid motion configuration: require 0 <= low threshold < spike threshold <= 1, "
-            "0 <= pre-trigger activity ratio <= 1, and at least one camera"
+            "0 <= pre-trigger activity ratio <= 1, 1-120 stability frames, "
+            "0-10000 cooldown milliseconds, and at least one camera"
          << endl;
     return 2;
   }
@@ -95,6 +100,8 @@ int main(int argc, char **argv)
            " low_threshold=" + to_string(motion_params.low_threshold) +
            " pretrigger_activity_ratio=" + to_string(motion_params.pretrigger_activity_ratio) +
            " min_cameras=" + to_string(motion_params.min_cameras_for_event) +
+           " stability_frames=" + to_string(motion_params.stability_frames) +
+           " cooldown_ms=" + to_string(motion_params.cooldown_period_ms) +
            " processing_fps=" + to_string(motion_params.processing_fps) +
            " spike_window_ms=" + to_string(motion_processing::spikeWindowDurationMs(motion_params)));
 

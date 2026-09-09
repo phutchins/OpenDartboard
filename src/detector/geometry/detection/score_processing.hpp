@@ -17,6 +17,12 @@ namespace score_processing
         string ring = "MISS";
         string score = "MISS";
         float nearest_wire_distance = numeric_limits<float>::infinity();
+        Point2f scoring_position = Point2f(-1, -1);
+        Point2f board_position_mm = Point2f(-1, -1);
+        bool board_entry_extrapolated = false;
+        float visible_tip_radius_mm = numeric_limits<float>::quiet_NaN();
+        float scoring_radius_mm = numeric_limits<float>::quiet_NaN();
+        float tip_extension_mm = 0.0f;
     };
 
     // Score result for a single dart

@@ -35,6 +35,12 @@ int main()
     passed &= require(!motion_processing::isValidPretriggerActivityRatio(
                           std::numeric_limits<double>::quiet_NaN()),
                       "non-finite pre-trigger activity ratios must be rejected");
+    passed &= require(motion_processing::isValidTimingConfiguration(5, 250),
+                      "low-latency timing configuration must validate");
+    passed &= require(!motion_processing::isValidTimingConfiguration(0, 250),
+                      "zero stability frames must be rejected");
+    passed &= require(!motion_processing::isValidTimingConfiguration(5, -1),
+                      "negative cooldown must be rejected");
 
     params.spike_window_frames = 10;
     params.processing_fps = 15.0;

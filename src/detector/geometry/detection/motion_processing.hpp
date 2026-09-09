@@ -59,6 +59,12 @@ namespace motion_processing
         return std::isfinite(ratio) && ratio >= 0.0 && ratio <= 1.0;
     }
 
+    inline bool isValidTimingConfiguration(int stabilityFrames, int cooldownMilliseconds)
+    {
+        return stabilityFrames >= 1 && stabilityFrames <= 120 &&
+               cooldownMilliseconds >= 0 && cooldownMilliseconds <= 10000;
+    }
+
     // Event states for dart detection
     enum class DartEventState
     {
