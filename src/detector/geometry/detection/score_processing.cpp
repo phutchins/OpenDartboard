@@ -229,6 +229,7 @@ namespace score_processing
             };
             vector<CameraScoreCandidate> camera_scores;
             vector<Ring> ring_observations;
+            vector<int> outside_board_cameras;
             vector<Mat> points_on_screen;            // For debug images
 
             const size_t camera_count = min({dart_result.camera_results.size(), calibrations.size(), background_frames.size()});
@@ -272,6 +273,8 @@ namespace score_processing
                         calibrations[i]);
                     if (ring != Ring::MISS)
                         ring_observations.push_back(ring);
+                    else
+                        outside_board_cameras.push_back(static_cast<int>(i));
                 }
                 else if (dart_result.camera_results[i].tip_found && debug_mode)
                 {
@@ -281,11 +284,11 @@ namespace score_processing
                 }
                 string score_test = getScoreForRingAtPoint(
                     ring,
-                    // Preserve the observed wedge direction. The extrapolated
-                    // board entry is intentionally used only for radial ring
-                    // classification because an off-plane shape centroid can
-                    // bend the mapped shaft axis tangentially.
-                    dart_result.camera_results[i].tip_position,
+                    // Ring and wedge must describe the same physical point.
+                    // The visible barrel endpoint can still be on the camera
+                    // side of a wire; use the estimated board-entry point for
+                    // both radial and angular classification.
+                    scoring_position,
                     calibrations[i]);
                 CameraScoreDiagnostic camera_diagnostic;
                 camera_diagnostic.camera_index = static_cast<int>(i);
@@ -358,7 +361,46 @@ namespace score_processing
                 }
             }
 
-            if (!camera_scores.empty())
+            if (hasOutsideBoardConsensus(outside_board_cameras.size()))
+            {
+                result.score = "MISS";
+                result.confidence = 0.8f;
+                result.camera_index = -1;
+                result.valid = true;
+
+                // Prefer an orientation-ready outside-board observation so a
+                // directional miss can still be drawn beside the right wedge.
+                for (const int camera_index : outside_board_cameras)
+                {
+                    if (!geometry_calibration::hasValidOrientation(calibrations[camera_index]))
+                        continue;
+                    const auto diagnostic = find_if(
+                        result.camera_diagnostics.begin(),
+                        result.camera_diagnostics.end(),
+                        [camera_index](const CameraScoreDiagnostic &candidate) {
+                            return candidate.camera_index == camera_index;
+                        });
+                    if (diagnostic == result.camera_diagnostics.end())
+                        continue;
+
+                    Point2f normalized_position;
+                    if (!normalizeDartboardPosition(
+                            diagnostic->scoring_position,
+                            calibrations[camera_index],
+                            normalized_position))
+                        continue;
+                    result.pixel_position = diagnostic->scoring_position;
+                    result.center_position = dart_result.camera_results[camera_index].center_position;
+                    result.dartboard_position = normalized_position;
+                    result.has_dartboard_position = true;
+                    result.camera_index = camera_index;
+                    break;
+                }
+                log_info("Outside-board consensus: MISS from " +
+                         to_string(outside_board_cameras.size()) +
+                         " geometry cameras");
+            }
+            else if (!camera_scores.empty())
             {
                 // Consensus scoring logic
                 string final_score;

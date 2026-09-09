@@ -43,6 +43,15 @@ namespace score_processing
         return ring == Ring::SINGLE || ring == Ring::DOUBLE || ring == Ring::TRIPLE;
     }
 
+    // A score inside the board is not credible when two independently
+    // calibrated views place their detected board-entry point beyond the
+    // double ring. This also prevents one stale contour from turning a real
+    // miss into an in-board score.
+    inline bool hasOutsideBoardConsensus(size_t outsideBoardObservations)
+    {
+        return outsideBoardObservations >= 2;
+    }
+
     struct RingConsensus
     {
         Ring ring = Ring::MISS;

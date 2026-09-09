@@ -55,5 +55,12 @@ int main()
             {std::numeric_limits<float>::quiet_NaN(), 3.0f}) == 1,
         "invalid boundary distances must not beat measured candidates");
 
+    passed &= require(
+        !score_processing::hasOutsideBoardConsensus(1),
+        "one outside-board observation must not override valid camera scores");
+    passed &= require(
+        score_processing::hasOutsideBoardConsensus(2),
+        "two outside-board observations must override one stale in-board contour");
+
     return passed ? 0 : 1;
 }
