@@ -173,6 +173,7 @@ namespace
                 {"previous", dart_processing::getDartBoardStateName(dart_result.previous_state)},
                 {"current", dart_processing::getDartBoardStateName(dart_result.current_state)}};
             manifest["result"] = {
+                {"valid", score_result.valid},
                 {"score", score_result.score},
                 {"confidence", score_result.confidence},
                 {"selected_camera", score_result.camera_index},
@@ -200,6 +201,7 @@ namespace
                     camera["state"] = dart_processing::getDartBoardStateName(detection.detected_state);
                     camera["changed_pixels"] = detection.total_changed_pixels;
                     camera["change_ratio_percent"] = detection.change_ratio;
+                    camera["supports_persistent_change"] = detection.supports_persistent_change;
                     camera["tip_found"] = detection.tip_found;
                     camera["tip"] = pointJson(detection.tip_position);
                     camera["shape_center"] = pointJson(detection.center_position);
@@ -312,14 +314,37 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
     // Process scoring using the new scoring system
     score_processing::ScoreResult score_result = score_processing::processScore(background_frames, dart_result, calibrations, debug_mode);
 
+    uint64_t event_timestamp = 0;
+    string event_id;
+    if (score_result.valid || (debug_mode && dart_result.event_processed))
+    {
+        event_timestamp = chrono::duration_cast<chrono::milliseconds>(
+                              chrono::system_clock::now().time_since_epoch())
+                              .count();
+        event_id = makeDiagnosticEventId(event_timestamp);
+    }
+
+    // Preserve every settled motion event in debug mode, including events that
+    // were rejected before scoring. Those are precisely the frames needed to
+    // diagnose a missed dart without waiting for a later throw to overwrite
+    // the fixed-name debug images.
+    if (debug_mode && dart_result.event_processed)
+    {
+        captureDiagnosticEvent(
+            event_id,
+            event_timestamp,
+            frames,
+            background_frames,
+            dart_result,
+            score_result,
+            calibrations);
+    }
+
     // Only return result if scoring system says it's valid (state changed)
     if (score_result.valid)
     {
-        const uint64_t timestamp = chrono::duration_cast<chrono::milliseconds>(
-                                       chrono::system_clock::now().time_since_epoch())
-                                       .count();
-        result.timestamp = timestamp;
-        result.event_id = makeDiagnosticEventId(timestamp);
+        result.timestamp = event_timestamp;
+        result.event_id = event_id;
         result.dart_detected = true;
         result.score = score_result.score;
         result.position = score_result.pixel_position;
@@ -327,18 +352,6 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
         result.has_board_position = score_result.has_dartboard_position;
         result.confidence = score_result.confidence;
         result.camera_index = score_result.camera_index;
-
-        if (debug_mode)
-        {
-            captureDiagnosticEvent(
-                result.event_id,
-                timestamp,
-                frames,
-                background_frames,
-                dart_result,
-                score_result,
-                calibrations);
-        }
     }
 
     return result;

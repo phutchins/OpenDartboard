@@ -413,19 +413,52 @@ namespace score_processing
                     [](const dart_processing::CameraDetectionResult &camera) {
                         return camera.tip_found;
                     });
-                if (dart_geometry::hasSufficientMissEvidence(cameras_with_tips))
+                const size_t cameras_supporting_persistent_change = count_if(
+                    dart_result.camera_results.begin(),
+                    dart_result.camera_results.end(),
+                    [](const dart_processing::CameraDetectionResult &camera) {
+                        return camera.supports_persistent_change;
+                    });
+                if (dart_geometry::hasSufficientMissEvidence(
+                        cameras_with_tips,
+                        cameras_supporting_persistent_change))
                 {
                     result.score = "MISS";
                     result.confidence = 0.5f;
                     result.camera_index = -1;
                     result.valid = true;
+
+                    // Keep a directional position for misses when the
+                    // orientation-ready camera saw the dart. The client can
+                    // then place a zero-score hit near the correct numbered
+                    // sector instead of dropping it at an anonymous location.
+                    for (size_t i = 0; i < camera_count; ++i)
+                    {
+                        if (!dart_result.camera_results[i].tip_found ||
+                            !geometry_calibration::hasValidOrientation(calibrations[i]))
+                            continue;
+                        Point2f normalized_position;
+                        if (!normalizeDartboardPosition(
+                                dart_result.camera_results[i].tip_position,
+                                calibrations[i],
+                                normalized_position))
+                            continue;
+                        result.pixel_position = dart_result.camera_results[i].tip_position;
+                        result.center_position = dart_result.camera_results[i].center_position;
+                        result.dartboard_position = normalized_position;
+                        result.has_dartboard_position = true;
+                        result.camera_index = static_cast<int>(i);
+                        break;
+                    }
                     if (debug_mode)
-                        log_warning("State changed with multi-camera tip evidence but no in-board score; reporting MISS");
+                        log_warning("State changed with corroborated tip evidence but no in-board score; reporting MISS");
                 }
                 else if (debug_mode)
                 {
                     log_warning("SCORE_EVENT_REJECTED reason=insufficient_miss_evidence cameras_with_tips=" +
-                                to_string(cameras_with_tips));
+                                to_string(cameras_with_tips) +
+                                " cameras_supporting_persistent_change=" +
+                                to_string(cameras_supporting_persistent_change));
                 }
             }
             break;

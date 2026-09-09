@@ -352,6 +352,8 @@ namespace dart_processing
             return result; // Not collecting and no movement finished, return empty
         }
 
+        result.event_processed = true;
+
         // initialise variables
         result.camera_results.resize(current_frames.size());
         if (debug_mode)
@@ -430,13 +432,15 @@ namespace dart_processing
             result.camera_results[i].total_changed_pixels = total_changed_pixels;
             result.camera_results[i].change_ratio = change_ratio;
             result.camera_results[i].total_pixels = total_pixels;
+            result.camera_results[i].supports_persistent_change =
+                change_ratio >= params.supporting_change_ratio_percent;
 
             // Crate a working background for this camera
             Mat single_thresh;
 
             // Determine candidate state based on change ratio and previous state
             auto candidate_state = DartBoardState::CLEAN;
-            if (change_ratio >= 0.22) // Threshold for detecting a dart
+            if (change_ratio >= params.dart_change_ratio_percent)
             {
 
                 // CHECK FROM CLEAN AND OR UNKNOW STATES TOO (MAYBE NOT DEFINED YET)
@@ -501,10 +505,15 @@ namespace dart_processing
                     previous_states[i] == DartBoardState::CLEAN)
                 {
                     candidate_state = DartBoardState::CLEAN;
-                    // Reset working background when going to CLEAN (safety reset)
-                    working_backgrounds[0] = Mat();
-                    working_backgrounds[1] = Mat();
-                    working_backgrounds[2] = Mat();
+                    // A dart near the surround can be almost edge-on to this
+                    // camera. Retain even its smaller stable mask so the next
+                    // throw is compared with the scene that is actually on the
+                    // board. Never clear another camera's independently useful
+                    // working background here.
+                    if (result.camera_results[i].supports_persistent_change)
+                        working_backgrounds[i] = averaged_frame.clone();
+                    else
+                        working_backgrounds[i] = Mat();
 
                     // clone the diff to working diff
                     // we know the latest is good!
@@ -568,6 +577,7 @@ namespace dart_processing
         int goes_clean = 0;
         int stays_same = 0;
         size_t cameras_with_tips = 0;
+        size_t cameras_supporting_persistent_change = 0;
         bool oriented_tip_inside_scoring_area = false;
 
         // Loop through all cameras once
@@ -600,20 +610,23 @@ namespace dart_processing
                     oriented_tip_inside_scoring_area = true;
                 }
             }
+            if (result.camera_results[i].supports_persistent_change)
+                cameras_supporting_persistent_change++;
         }
 
         // Pick the winner
         DartBoardState final_state;
-        if (goes_clean >= 2)
+        if (dart_geometry::hasSufficientDartEvidence(
+                moves_up,
+                cameras_with_tips,
+                cameras_supporting_persistent_change,
+                oriented_tip_inside_scoring_area))
+        {
+            final_state = static_cast<DartBoardState>(static_cast<int>(best_previous_state) + 1); // Corroborated dart landed
+        }
+        else if (goes_clean >= 2)
         {
             final_state = DartBoardState::CLEAN; // Rule 3: 2+ think CLEAN
-        }
-        else if (moves_up >= 2 &&
-                 dart_geometry::hasSufficientDartEvidence(
-                     cameras_with_tips,
-                     oriented_tip_inside_scoring_area))
-        {
-            final_state = static_cast<DartBoardState>(static_cast<int>(best_previous_state) + 1); // Rule 1: 2+ move up
         }
         else
         {
@@ -624,10 +637,12 @@ namespace dart_processing
         string a = getDartBoardStateName(best_previous_state);
         string b = getDartBoardStateName(final_state);
         log_debug("FINAL State: From: " + a + " -> " + b);
-        if (moves_up >= 2 && final_state == best_previous_state)
+        if (moves_up > 0 && final_state == best_previous_state)
         {
             log_warning("DART_STATE_REJECTED reason=insufficient_tip_evidence cameras_with_tips=" +
                         to_string(cameras_with_tips) +
+                        " cameras_supporting_persistent_change=" +
+                        to_string(cameras_supporting_persistent_change) +
                         " oriented_tip_inside_scoring_area=" +
                         (oriented_tip_inside_scoring_area ? "true" : "false"));
         }

@@ -40,16 +40,20 @@ int main()
                            cv::Point2f(100.0f, 900.0f), boardCenter, boardEllipse),
                       "a frame-edge flight beyond the surround must be rejected");
 
-    passed &= require(!dart_geometry::hasSufficientDartEvidence(1, false),
-                      "one unverified edge tip must not consume a dart");
-    passed &= require(dart_geometry::hasSufficientDartEvidence(2, false),
+    passed &= require(!dart_geometry::hasSufficientDartEvidence(1, 1, 1, false),
+                      "one uncorroborated edge tip must not consume a dart");
+    passed &= require(dart_geometry::hasSufficientDartEvidence(2, 2, 2, false),
                       "two independent camera tips must confirm a dart or miss");
-    passed &= require(dart_geometry::hasSufficientDartEvidence(1, true),
+    passed &= require(dart_geometry::hasSufficientDartEvidence(1, 1, 1, true),
                       "one oriented in-board tip may confirm a numbered dart");
-    passed &= require(!dart_geometry::hasSufficientMissEvidence(1),
-                      "one camera must not create a phantom miss");
-    passed &= require(dart_geometry::hasSufficientMissEvidence(2),
+    passed &= require(dart_geometry::hasSufficientDartEvidence(1, 1, 2, false),
+                      "one edge-on tip plus a second persistent view must confirm a miss");
+    passed &= require(!dart_geometry::hasSufficientMissEvidence(1, 1),
+                      "one uncorroborated camera must not create a phantom miss");
+    passed &= require(dart_geometry::hasSufficientMissEvidence(2, 2),
                       "two cameras may confirm a real miss");
+    passed &= require(dart_geometry::hasSufficientMissEvidence(1, 2),
+                      "one tip plus two persistent camera changes may confirm a real miss");
 
     return passed ? 0 : 1;
 }

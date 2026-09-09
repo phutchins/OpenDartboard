@@ -74,21 +74,31 @@ namespace dart_geometry
         return std::isfinite(normalizedRadius) && normalizedRadius <= maximumNormalizedRadius;
     }
 
-    // State changes need evidence that a dart actually remained on the board.
-    // Two camera tips are sufficient for any throw, including a miss. A single
-    // tip is sufficient only when it came from the orientation-ready camera
-    // and lies inside the scoring area, where it can produce a numbered score.
+    // State changes need evidence that a dart actually remained on or directly
+    // around the board. A miss near the edge can present a full dart silhouette
+    // to only one camera, so allow the other cameras' smaller persistent masks
+    // to corroborate it without requiring them to produce a second tip.
     inline bool hasSufficientDartEvidence(
+        size_t camerasMovingUp,
         size_t camerasWithTips,
+        size_t camerasSupportingPersistentChange,
         bool orientedTipInsideScoringArea)
     {
-        return camerasWithTips >= 2 || orientedTipInsideScoringArea;
+        if (camerasMovingUp == 0 || camerasWithTips == 0)
+            return false;
+        if (orientedTipInsideScoringArea)
+            return true;
+        return camerasMovingUp >= 2 || camerasSupportingPersistentChange >= 2;
     }
 
-    // A miss has no ring/wedge evidence, so require two independent camera
-    // tips before consuming one of the three darts in a visit.
-    inline bool hasSufficientMissEvidence(size_t camerasWithTips)
+    // A miss has no ring/wedge score. It is nevertheless real when two cameras
+    // locate tips, or when one tip is corroborated by persistent image changes
+    // from at least one more camera.
+    inline bool hasSufficientMissEvidence(
+        size_t camerasWithTips,
+        size_t camerasSupportingPersistentChange)
     {
-        return camerasWithTips >= 2;
+        return camerasWithTips >= 2 ||
+               (camerasWithTips >= 1 && camerasSupportingPersistentChange >= 2);
     }
 }
