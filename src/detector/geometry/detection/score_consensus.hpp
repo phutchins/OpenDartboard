@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -96,5 +98,27 @@ namespace score_processing
             return "MISS";
 
         return std::string(ringToString(ring)) + orientedScore.substr(1);
+    }
+
+    // When orientation-ready cameras disagree on adjacent wedges, prefer the
+    // observation whose detected tip is farther from its nearest numbered
+    // wire. Camera ordering is not a measure of confidence.
+    inline size_t selectMostSeparatedCandidate(
+        const std::vector<float> &nearestWireDistances)
+    {
+        size_t bestIndex = 0;
+        float bestDistance = -std::numeric_limits<float>::infinity();
+        for (size_t index = 0; index < nearestWireDistances.size(); ++index)
+        {
+            const float distance = nearestWireDistances[index];
+            if (std::isnan(distance))
+                continue;
+            if (distance > bestDistance)
+            {
+                bestDistance = distance;
+                bestIndex = index;
+            }
+        }
+        return bestIndex;
     }
 } // namespace score_processing

@@ -348,27 +348,45 @@ namespace score_processing
 
                 if (!consensus_score.empty())
                 {
-                    // Use consensus score, pick first camera from the group
+                    // Use the agreeing score and retain the most confidently
+                    // separated camera position from that group.
                     final_score = consensus_score;
-                    best_camera = score_cameras[consensus_score][0];
+                    vector<size_t> agreeing_candidate_indices;
+                    vector<float> agreeing_wire_distances;
+                    for (size_t index = 0; index < camera_scores.size(); ++index)
+                    {
+                        if (camera_scores[index].score != consensus_score)
+                            continue;
+                        agreeing_candidate_indices.push_back(index);
+                        agreeing_wire_distances.push_back(camera_scores[index].nearest_wire_distance);
+                    }
+                    const size_t selected_index = agreeing_candidate_indices[
+                        selectMostSeparatedCandidate(agreeing_wire_distances)];
+                    best_camera = camera_scores[selected_index].camera_index;
                     selected_confidence = 0.9f;
                     log_info("Consensus score: " + final_score + " from " + to_string(max_consensus) + " cameras");
                 }
                 else
                 {
+                    vector<float> candidate_wire_distances;
+                    candidate_wire_distances.reserve(camera_scores.size());
+                    for (const auto &candidate : camera_scores)
+                        candidate_wire_distances.push_back(candidate.nearest_wire_distance);
+                    const auto &wedge_candidate = camera_scores[
+                        selectMostSeparatedCandidate(candidate_wire_distances)];
                     const auto ring_consensus = selectRingConsensus(ring_observations);
                     const string ring_adjusted_score = ring_consensus.valid
                                                            ? applyRingConsensus(
                                                                  ring_consensus.ring,
-                                                                 camera_scores[0].score)
+                                                                 wedge_candidate.score)
                                                            : "MISS";
 
-                    best_camera = camera_scores[0].camera_index;
+                    best_camera = wedge_candidate.camera_index;
                     if (ring_adjusted_score != "MISS")
                     {
                         final_score = ring_adjusted_score;
                         selected_confidence = board_geometry::singleCameraBoundaryConfidence(
-                            camera_scores[0].nearest_wire_distance,
+                            wedge_candidate.nearest_wire_distance,
                             0.85f);
                         log_info("Ring consensus score: " + final_score +
                                  " from " + to_string(ring_consensus.votes) +
@@ -380,17 +398,17 @@ namespace score_processing
                                   " ring=" + ringToString(ring_consensus.ring) +
                                   " ring_votes=" + to_string(ring_consensus.votes) +
                                   " nearest_wedge_wire_distance_px=" +
-                                  to_string(camera_scores[0].nearest_wire_distance));
+                                  to_string(wedge_candidate.nearest_wire_distance));
                     }
                     else
                     {
-                        final_score = camera_scores[0].score;
+                        final_score = wedge_candidate.score;
                         selected_confidence = board_geometry::singleCameraBoundaryConfidence(
-                            camera_scores[0].nearest_wire_distance);
+                            wedge_candidate.nearest_wire_distance);
                         log_info("No consensus, using single camera score: " + final_score + " from camera " + to_string(best_camera));
                         log_debug("SCORE_CONFIDENCE mode=SINGLE_CAMERA camera=" + to_string(best_camera) +
                                   " confidence=" + to_string(selected_confidence) +
-                                  " nearest_wire_distance_px=" + to_string(camera_scores[0].nearest_wire_distance) +
+                                  " nearest_wire_distance_px=" + to_string(wedge_candidate.nearest_wire_distance) +
                                   " reason=no_second_ready_camera_agreement");
                     }
                 }

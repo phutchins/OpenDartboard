@@ -1,6 +1,7 @@
 #include "detector/geometry/detection/score_consensus.hpp"
 
 #include <iostream>
+#include <limits>
 
 namespace
 {
@@ -42,6 +43,17 @@ int main()
     passed &= require(
         score_processing::applyRingConsensus(Ring::TRIPLE, "MISS") == "MISS",
         "ring consensus cannot invent a wedge without an oriented score");
+
+    passed &= require(
+        score_processing::selectMostSeparatedCandidate({2.80f, 0.44f}) == 0,
+        "wedge tie-break must retain the camera farther from its wire");
+    passed &= require(
+        score_processing::selectMostSeparatedCandidate({1.08f, 4.21f}) == 1,
+        "wedge tie-break must not depend on camera order");
+    passed &= require(
+        score_processing::selectMostSeparatedCandidate(
+            {std::numeric_limits<float>::quiet_NaN(), 3.0f}) == 1,
+        "invalid boundary distances must not beat measured candidates");
 
     return passed ? 0 : 1;
 }
