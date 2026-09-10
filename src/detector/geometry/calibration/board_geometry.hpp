@@ -77,7 +77,7 @@ namespace board_geometry
         const PlanarBoardTransform &transform,
         const cv::Point2f &visibleTip,
         const cv::Point2f &shapeCenter,
-        float extensionMillimetres = 12.0f)
+        float extensionMillimetres = 6.0f)
     {
         BoardEntryEstimate result;
         if (!transform.valid || !std::isfinite(extensionMillimetres) ||

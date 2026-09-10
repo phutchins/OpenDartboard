@@ -40,6 +40,34 @@ int main()
                            cv::Point2f(100.0f, 900.0f), boardCenter, boardEllipse),
                       "a frame-edge flight beyond the surround must be rejected");
 
+    const std::vector<cv::Point> primaryDart = {
+        cv::Point(455, 520), cv::Point(485, 520),
+        cv::Point(485, 615), cv::Point(455, 615)};
+    const std::vector<cv::Point> unrelatedReflection = {
+        cv::Point(920, 500), cv::Point(955, 500),
+        cv::Point(955, 535), cv::Point(920, 535)};
+    const auto isolatedPoints = dart_geometry::collectBoardwardDartPoints(
+        {primaryDart, unrelatedReflection}, cv::Point2f(601.0f, 456.0f));
+    passed &= require(isolatedPoints.size() == primaryDart.size(),
+                      "unrelated mask islands must not be combined with the dart hull");
+
+    const std::vector<cv::Point> flight = {
+        cv::Point(550, 500), cv::Point(610, 500),
+        cv::Point(610, 625), cv::Point(550, 625)};
+    const std::vector<cv::Point> alignedShaft = {
+        cv::Point(578, 315), cv::Point(598, 315),
+        cv::Point(598, 455), cv::Point(578, 455)};
+    const auto fragmentedDartPoints = dart_geometry::collectBoardwardDartPoints(
+        {flight, alignedShaft}, cv::Point2f(623.0f, 447.0f));
+    passed &= require(fragmentedDartPoints.size() == flight.size() + alignedShaft.size(),
+                      "an aligned shaft fragment closer to the board must remain part of the dart");
+    std::vector<cv::Point> fragmentedHull;
+    cv::convexHull(fragmentedDartPoints, fragmentedHull);
+    const auto fragmentedSelection = dart_geometry::selectBoardwardHullPoint(
+        fragmentedHull, cv::Point2f(580.0f, 562.5f), cv::Point2f(623.0f, 447.0f));
+    passed &= require(fragmentedSelection.valid && fragmentedSelection.point.y == 315.0f,
+                      "the aligned boardward fragment must supply the detected tip");
+
     passed &= require(!dart_geometry::hasSufficientDartEvidence(1, 1, 1, false),
                       "one uncorroborated edge tip must not consume a dart");
     passed &= require(dart_geometry::hasSufficientDartEvidence(2, 2, 2, false),

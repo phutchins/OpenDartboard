@@ -114,12 +114,15 @@ namespace dart_processing
         sort(dart_pieces.begin(), dart_pieces.end(), [](const vector<Point> &a, const vector<Point> &b)
              { return contourArea(a) > contourArea(b); });
 
-        // Combine ALL dart pieces into one big point cloud
+        // Only combine fragments that continue from the primary dart shape
+        // toward the board. Unrelated mask islands previously created a huge
+        // hull and produced confident tips on the wrong side of the image.
         vector<Point> all_points;
-        for (const auto &piece : dart_pieces)
-        {
-            all_points.insert(all_points.end(), piece.begin(), piece.end());
-        }
+        if (calibration != nullptr)
+            all_points = dart_geometry::collectBoardwardDartPoints(
+                dart_pieces, Point2f(calibration->bullCenter));
+        else
+            all_points = dart_pieces.front();
 
         if (all_points.empty())
         {
