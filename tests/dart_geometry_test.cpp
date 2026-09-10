@@ -68,6 +68,29 @@ int main()
     passed &= require(fragmentedSelection.valid && fragmentedSelection.point.y == 315.0f,
                       "the aligned boardward fragment must supply the detected tip");
 
+    const std::vector<cv::Point> shaftAwayFromBull = {
+        cv::Point(646, 309), cv::Point(668, 309),
+        cv::Point(668, 426), cv::Point(646, 426)};
+    const std::vector<cv::Point> flightNearBull = {
+        cv::Point(597, 431), cv::Point(708, 431),
+        cv::Point(708, 545), cv::Point(597, 545)};
+    const auto awayFacingDartPoints = dart_geometry::collectBoardwardDartPoints(
+        {flightNearBull, shaftAwayFromBull}, cv::Point2f(623.0f, 447.0f));
+    passed &= require(
+        awayFacingDartPoints.size() == flightNearBull.size() + shaftAwayFromBull.size(),
+        "an aligned shaft farther from the bull must remain part of the dart");
+    const auto taperedSelection = dart_geometry::selectTaperedDartEndpoint(
+        awayFacingDartPoints, cv::Point2f(654.0f, 489.0f), cv::Point2f(623.0f, 447.0f));
+    passed &= require(
+        taperedSelection.valid && taperedSelection.point.y == 309.0f,
+        "the narrow shaft end must beat the wide flight even when it points away from the bull");
+
+    const auto reflectionStillExcluded = dart_geometry::collectBoardwardDartPoints(
+        {flightNearBull, unrelatedReflection}, cv::Point2f(623.0f, 447.0f));
+    passed &= require(
+        reflectionStillExcluded.size() == flightNearBull.size(),
+        "a compact off-axis reflection must stay excluded by bidirectional shaft matching");
+
     passed &= require(!dart_geometry::hasSufficientDartEvidence(1, 1, 1, false),
                       "one uncorroborated edge tip must not consume a dart");
     passed &= require(dart_geometry::hasSufficientDartEvidence(2, 2, 2, false),

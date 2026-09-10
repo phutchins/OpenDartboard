@@ -99,7 +99,7 @@ namespace dart_processing
         for (const auto &contour : contours)
         {
             double area = contourArea(contour);
-            if (area > 400 && area < 20000) // More inclusive range for dart pieces
+            if (area > 250 && area < 20000) // Include narrow disconnected shaft fragments
             {
                 dart_pieces.push_back(contour);
             }
@@ -149,16 +149,16 @@ namespace dart_processing
         Point2f biggest_shape_center(m.m10 / m.m00, m.m01 / m.m00);
         center_position = biggest_shape_center;
 
-        // Prefer the hull extreme pointing toward the calibrated board. The old
-        // farthest-point rule regularly selected a flight or the bottom frame
-        // edge instead of the embedded tip.
+        // Prefer the tapered end of the complete silhouette. A dart can angle
+        // across the bull, so the true point is not always the hull point that
+        // happens to be closest to the board center.
         double max_distance = 0;
         Point furthest_hull_point;
         bool selected_boardward = false;
         if (calibration != nullptr)
         {
-            const auto selection = dart_geometry::selectBoardwardHullPoint(
-                hull,
+            const auto selection = dart_geometry::selectTaperedDartEndpoint(
+                all_points,
                 biggest_shape_center,
                 Point2f(calibration->bullCenter));
             if (selection.valid && dart_geometry::isPlausibleBoardPoint(

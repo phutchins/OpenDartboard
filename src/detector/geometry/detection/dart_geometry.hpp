@@ -16,29 +16,67 @@ namespace dart_geometry
         float extensionPixels = 0.0f;
     };
 
+    inline cv::Point2f contourCenter(const std::vector<cv::Point> &contour)
+    {
+        const cv::Moments moments = cv::moments(contour);
+        if (moments.m00 == 0.0)
+            return cv::Point2f(0.0f, 0.0f);
+        return cv::Point2f(
+            static_cast<float>(moments.m10 / moments.m00),
+            static_cast<float>(moments.m01 / moments.m00));
+    }
+
+    inline cv::Point2f principalAxis(const std::vector<cv::Point> &points)
+    {
+        if (points.size() < 2)
+            return cv::Point2f(0.0f, 0.0f);
+
+        cv::Point2f mean(0.0f, 0.0f);
+        for (const auto &point : points)
+            mean += cv::Point2f(point);
+        mean *= 1.0f / static_cast<float>(points.size());
+
+        double xx = 0.0;
+        double xy = 0.0;
+        double yy = 0.0;
+        for (const auto &point : points)
+        {
+            const cv::Point2f offset = cv::Point2f(point) - mean;
+            xx += offset.x * offset.x;
+            xy += offset.x * offset.y;
+            yy += offset.y * offset.y;
+        }
+        const float angle = 0.5f * std::atan2(
+            static_cast<float>(2.0 * xy),
+            static_cast<float>(xx - yy));
+        return cv::Point2f(std::cos(angle), std::sin(angle));
+    }
+
     // A thresholded frame can contain several sizeable, disconnected changes:
     // the dart's flight/shaft as well as reflections, wires, or an old dart
     // settling. Combining every contour into one convex hull lets an unrelated
     // speck become the selected tip. Keep the primary contour and only add
-    // fragments that continue from it toward the board.
+    // fragments that continue its shaft. The visible shaft is not guaranteed
+    // to point toward the bull: a dart in the upper board can enter farther
+    // from the bull than its flight appears in a low camera. Accept a strongly
+    // elongated, collinear fragment on either side of the primary contour,
+    // while retaining the older boardward test for compact connected pieces.
     inline std::vector<cv::Point> collectBoardwardDartPoints(
         const std::vector<std::vector<cv::Point>> &pieces,
         const cv::Point2f &boardCenter,
         float minimumCloserPixels = 2.0f,
         float baseAlignmentTolerancePixels = 32.0f,
-        float alignmentToleranceSlope = 0.65f)
+        float alignmentToleranceSlope = 0.65f,
+        float maximumAlignedFragmentDistancePixels = 240.0f,
+        float minimumElongation = 2.2f)
     {
         std::vector<cv::Point> selectedPoints;
         if (pieces.empty())
             return selectedPoints;
 
-        const cv::Moments primaryMoments = cv::moments(pieces.front());
-        if (primaryMoments.m00 == 0.0)
+        const cv::Point2f primaryCenter = contourCenter(pieces.front());
+        if (primaryCenter == cv::Point2f(0.0f, 0.0f))
             return selectedPoints;
-
-        const cv::Point2f primaryCenter(
-            static_cast<float>(primaryMoments.m10 / primaryMoments.m00),
-            static_cast<float>(primaryMoments.m01 / primaryMoments.m00));
         cv::Point2f boardward = boardCenter - primaryCenter;
         const float primaryBoardDistance = cv::norm(boardward);
         if (!std::isfinite(primaryBoardDistance) || primaryBoardDistance <= 0.0f)
@@ -49,15 +87,11 @@ namespace dart_geometry
             selectedPoints.end(), pieces.front().begin(), pieces.front().end());
         for (size_t index = 1; index < pieces.size(); ++index)
         {
-            const cv::Moments candidateMoments = cv::moments(pieces[index]);
-            if (candidateMoments.m00 == 0.0)
+            const cv::Point2f candidateCenter = contourCenter(pieces[index]);
+            if (candidateCenter == cv::Point2f(0.0f, 0.0f))
                 continue;
-            const cv::Point2f candidateCenter(
-                static_cast<float>(candidateMoments.m10 / candidateMoments.m00),
-                static_cast<float>(candidateMoments.m01 / candidateMoments.m00));
             const float candidateBoardDistance = cv::norm(boardCenter - candidateCenter);
-            if (!std::isfinite(candidateBoardDistance) ||
-                candidateBoardDistance > primaryBoardDistance - minimumCloserPixels)
+            if (!std::isfinite(candidateBoardDistance))
                 continue;
 
             const cv::Point2f offset = candidateCenter - primaryCenter;
@@ -67,13 +101,114 @@ namespace dart_geometry
             const float allowedPerpendicular = std::max(
                 baseAlignmentTolerancePixels,
                 std::max(0.0f, forward) * alignmentToleranceSlope);
-            if (forward < -minimumCloserPixels || perpendicular > allowedPerpendicular)
+            const bool continuesBoardward =
+                candidateBoardDistance <= primaryBoardDistance - minimumCloserPixels &&
+                forward >= -minimumCloserPixels &&
+                perpendicular <= allowedPerpendicular;
+
+            const cv::RotatedRect candidateBox = cv::minAreaRect(pieces[index]);
+            const float candidateLong = std::max(
+                candidateBox.size.width, candidateBox.size.height);
+            const float candidateShort = std::max(
+                1.0f, std::min(candidateBox.size.width, candidateBox.size.height));
+            const float elongation = candidateLong / candidateShort;
+            const cv::Point2f candidateAxis = principalAxis(pieces[index]);
+            const float candidateDistance = cv::norm(offset);
+            const float axisPerpendicular = std::fabs(
+                offset.x * candidateAxis.y - offset.y * candidateAxis.x);
+            const bool continuesAlignedShaft =
+                elongation >= minimumElongation &&
+                candidateDistance <= maximumAlignedFragmentDistancePixels &&
+                axisPerpendicular <= std::max(
+                    baseAlignmentTolerancePixels, candidateShort * 1.5f);
+
+            if (!continuesBoardward && !continuesAlignedShaft)
                 continue;
 
             selectedPoints.insert(
                 selectedPoints.end(), pieces[index].begin(), pieces[index].end());
         }
         return selectedPoints;
+    }
+
+    // Choose the narrow end of the complete flight/shaft silhouette. The dart
+    // point is the tapered end, whereas flights occupy a much wider cross
+    // section. If both ends have similar width, use the endpoint closer to the
+    // bull as a conservative fallback.
+    inline BoardwardTipSelection selectTaperedDartEndpoint(
+        const std::vector<cv::Point> &points,
+        const cv::Point2f &shapeCenter,
+        const cv::Point2f &boardCenter,
+        float minimumExtensionPixels = 10.0f,
+        float endFraction = 0.22f,
+        float decisiveWidthRatio = 0.78f)
+    {
+        BoardwardTipSelection result;
+        const cv::Point2f axis = principalAxis(points);
+        if (points.empty() || cv::norm(axis) <= 0.0f)
+            return result;
+        const cv::Point2f perpendicular(-axis.y, axis.x);
+
+        float minimumProjection = std::numeric_limits<float>::infinity();
+        float maximumProjection = -std::numeric_limits<float>::infinity();
+        cv::Point2f minimumPoint;
+        cv::Point2f maximumPoint;
+        for (const auto &candidate : points)
+        {
+            const float projection = cv::Point2f(candidate).dot(axis);
+            if (projection < minimumProjection)
+            {
+                minimumProjection = projection;
+                minimumPoint = cv::Point2f(candidate);
+            }
+            if (projection > maximumProjection)
+            {
+                maximumProjection = projection;
+                maximumPoint = cv::Point2f(candidate);
+            }
+        }
+
+        const float span = maximumProjection - minimumProjection;
+        if (!std::isfinite(span) || span <= 0.0f)
+            return result;
+        const float cap = std::max(3.0f, span * endFraction);
+        float minimumSideLow = std::numeric_limits<float>::infinity();
+        float minimumSideHigh = -std::numeric_limits<float>::infinity();
+        float maximumSideLow = std::numeric_limits<float>::infinity();
+        float maximumSideHigh = -std::numeric_limits<float>::infinity();
+        for (const auto &candidate : points)
+        {
+            const cv::Point2f point(candidate);
+            const float projection = point.dot(axis);
+            const float cross = point.dot(perpendicular);
+            if (projection <= minimumProjection + cap)
+            {
+                minimumSideLow = std::min(minimumSideLow, cross);
+                minimumSideHigh = std::max(minimumSideHigh, cross);
+            }
+            if (projection >= maximumProjection - cap)
+            {
+                maximumSideLow = std::min(maximumSideLow, cross);
+                maximumSideHigh = std::max(maximumSideHigh, cross);
+            }
+        }
+
+        const float minimumWidth = minimumSideHigh - minimumSideLow;
+        const float maximumWidth = maximumSideHigh - maximumSideLow;
+        if (minimumWidth <= maximumWidth * decisiveWidthRatio)
+            result.point = minimumPoint;
+        else if (maximumWidth <= minimumWidth * decisiveWidthRatio)
+            result.point = maximumPoint;
+        else
+            result.point = cv::norm(minimumPoint - boardCenter) <=
+                                   cv::norm(maximumPoint - boardCenter)
+                               ? minimumPoint
+                               : maximumPoint;
+
+        result.extensionPixels = cv::norm(result.point - shapeCenter);
+        result.valid = std::isfinite(result.extensionPixels) &&
+                       result.extensionPixels >= minimumExtensionPixels;
+        return result;
     }
 
     // The largest changed shape is normally the dart's flight. Its boardward
