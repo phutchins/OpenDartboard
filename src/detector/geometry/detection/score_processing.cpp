@@ -284,11 +284,11 @@ namespace score_processing
                 }
                 string score_test = getScoreForRingAtPoint(
                     ring,
-                    // Ring and wedge must describe the same physical point.
-                    // The visible barrel endpoint can still be on the camera
-                    // side of a wire; use the estimated board-entry point for
-                    // both radial and angular classification.
-                    scoring_position,
+                    // The projection is reliable radially, where it recovers
+                    // a hidden point beneath the barrel, but can bend the
+                    // shaft axis across a numbered wire. Preserve the observed
+                    // tip direction for the wedge measurement.
+                    dart_result.camera_results[i].tip_position,
                     calibrations[i]);
                 CameraScoreDiagnostic camera_diagnostic;
                 camera_diagnostic.camera_index = static_cast<int>(i);
@@ -337,7 +337,11 @@ namespace score_processing
                     if (score_test != "BULL" && score_test != "OUTER")
                     {
                         nearest_wire_distance = board_geometry::nearestWireDistancePixels(
-                            scoring_position,
+                            // Measure confidence at the same observed point
+                            // used to select the wedge. Mixing a raw wedge with
+                            // corrected-point proximity previously selected the
+                            // wrong camera in close 1/18 and 5/20 decisions.
+                            dart_result.camera_results[i].tip_position,
                             Point2f(calibrations[i].bullCenter),
                             calibrations[i].wires.wireEndpoints);
                     }

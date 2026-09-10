@@ -343,9 +343,9 @@ int main()
                           std::fabs(cv::norm(boardEntry.boardPoint) - 93.0f) < 0.01f,
                       "a hidden point must move a false triple observation into the single bed");
 
-    // Regression modelled on a captured hit: the visible endpoint is just
-    // across the 1/18 boundary, while extending the detected barrel axis to
-    // the board surface correctly places the physical hit in 18.
+    // Regression modelled on a captured hit: radial extrapolation can also
+    // cross a numbered wire. Wedge selection must therefore keep using the
+    // visible endpoint while the projected point is used for ring selection.
     const cv::Point2f visibleBoundaryPoint(
         80.0f * std::cos(-64.0f * static_cast<float>(CV_PI) / 180.0f),
         80.0f * std::sin(-64.0f * static_cast<float>(CV_PI) / 180.0f));
@@ -375,7 +375,7 @@ int main()
     passed &= require(wedgeBoundaryEntry.valid &&
                           visibleWedgeAngle < -63.0f &&
                           entryWedgeAngle > -63.0f && entryWedgeAngle < -45.0f,
-                      "board-entry correction must resolve a captured S18 hit across the 1/18 wire");
+                      "board-entry correction can cross a wedge wire and must remain radial-only");
 
     cv::Mat syntheticMask = cv::Mat::zeros(frameSize, CV_8UC1);
     const auto fillProjectedRing = [&](float innerRadius, float outerRadius) {

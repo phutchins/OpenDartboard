@@ -54,6 +54,12 @@ int main()
         score_processing::selectMostSeparatedCandidate(
             {std::numeric_limits<float>::quiet_NaN(), 3.0f}) == 1,
         "invalid boundary distances must not beat measured candidates");
+    passed &= require(
+        score_processing::selectMostSeparatedCandidate({8.6f, 1.7f}) == 0,
+        "a captured 5/20 disagreement must prefer the raw tip farther inside its wedge");
+    passed &= require(
+        score_processing::selectMostSeparatedCandidate({1.4f, 9.2f}) == 1,
+        "a captured 1/18 disagreement must prefer the other raw tip farther inside its wedge");
 
     passed &= require(
         !score_processing::hasOutsideBoardConsensus(1),
