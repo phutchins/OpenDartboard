@@ -18,6 +18,8 @@ struct DetectorResult
     int camera_index = -1;
     uint64_t timestamp = 0;
     string event_id = ""; // Stable identifier for diagnostic capture and correction labels
+    string previous_board_state = "";
+    string current_board_state = "";
 
     // Metadata for debugging/analysis
     bool motion_detected = false;

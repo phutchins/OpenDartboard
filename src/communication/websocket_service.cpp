@@ -727,6 +727,12 @@ string WebSocketService::formatScoreJson(const DetectorResult &result)
     }
     j["confidence"] = result.confidence;
     j["camera"] = result.camera_index;
+    if (!result.previous_board_state.empty() && !result.current_board_state.empty())
+    {
+        j["state"] = {
+            {"previous", result.previous_board_state},
+            {"current", result.current_board_state}};
+    }
     j["processing_time"] = result.processing_time_ms;
     j["timestamp"] = result.timestamp != 0
                          ? result.timestamp

@@ -370,6 +370,8 @@ DetectorResult GeometryDetector::process(const vector<Mat> &frames)
         result.has_board_position = score_result.has_dartboard_position;
         result.confidence = score_result.confidence;
         result.camera_index = score_result.camera_index;
+        result.previous_board_state = dart_processing::getDartBoardStateName(dart_result.previous_state);
+        result.current_board_state = dart_processing::getDartBoardStateName(dart_result.current_state);
     }
 
     return result;
