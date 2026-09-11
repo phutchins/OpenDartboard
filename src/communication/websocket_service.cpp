@@ -490,13 +490,27 @@ void WebSocketService::run()
                     return;
                 }
             }
+            const bool summary_only = req.has_param("summary") &&
+                                      req.get_param_value("summary") != "0" &&
+                                      req.get_param_value("summary") != "false";
 
             for (const auto &event_directory : event_directories) {
                 if (events.size() >= limit)
                     break;
                 json manifest;
-                if (readJsonFile(event_directory / "manifest.json", manifest))
+                if (!readJsonFile(event_directory / "manifest.json", manifest))
+                    continue;
+                if (!summary_only) {
                     events.push_back(manifest);
+                    continue;
+                }
+                events.push_back({
+                    {"schema_version", manifest.value("schema_version", 1)},
+                    {"event_id", manifest.value("event_id", "")},
+                    {"captured_at_epoch_ms", manifest.value("captured_at_epoch_ms", 0ULL)},
+                    {"result", manifest.value("result", json::object())},
+                    {"state", manifest.value("state", json::object())},
+                });
             }
             res.set_content(events.dump(), "application/json"); });
 
