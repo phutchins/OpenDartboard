@@ -280,21 +280,30 @@ namespace dart_geometry
         size_t camerasSupportingPersistentChange,
         bool orientedTipInsideScoringArea)
     {
-        if (camerasMovingUp == 0 || camerasWithTips == 0)
+        if (camerasMovingUp == 0)
             return false;
+        // A dart in the surround can leave a stable silhouette in every view
+        // while its point remains outside the calibrated scoring ellipse. In
+        // that case the tip detector intentionally returns no tip. Requiring
+        // all three persistent views keeps this path conservative while still
+        // allowing the visit to advance as a real MISS.
+        if (camerasWithTips == 0)
+            return camerasSupportingPersistentChange >= 3;
         if (orientedTipInsideScoringArea)
             return true;
         return camerasMovingUp >= 2 || camerasSupportingPersistentChange >= 2;
     }
 
     // A miss has no ring/wedge score. It is nevertheless real when two cameras
-    // locate tips, or when one tip is corroborated by persistent image changes
-    // from at least one more camera.
+    // locate tips, when one tip is corroborated by persistent image changes
+    // from at least one more camera, or when all three views retain a stable
+    // change after an outside-surround impact whose point cannot be located.
     inline bool hasSufficientMissEvidence(
         size_t camerasWithTips,
         size_t camerasSupportingPersistentChange)
     {
         return camerasWithTips >= 2 ||
-               (camerasWithTips >= 1 && camerasSupportingPersistentChange >= 2);
+               (camerasWithTips >= 1 && camerasSupportingPersistentChange >= 2) ||
+               camerasSupportingPersistentChange >= 3;
     }
 }

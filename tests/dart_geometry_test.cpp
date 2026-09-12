@@ -99,12 +99,20 @@ int main()
                       "one oriented in-board tip may confirm a numbered dart");
     passed &= require(dart_geometry::hasSufficientDartEvidence(1, 1, 2, false),
                       "one edge-on tip plus a second persistent view must confirm a miss");
+    passed &= require(!dart_geometry::hasSufficientDartEvidence(1, 0, 2, false),
+                      "two tipless persistent views must not create a phantom miss");
+    passed &= require(dart_geometry::hasSufficientDartEvidence(1, 0, 3, false),
+                      "three tipless persistent views must confirm a surround miss");
     passed &= require(!dart_geometry::hasSufficientMissEvidence(1, 1),
                       "one uncorroborated camera must not create a phantom miss");
     passed &= require(dart_geometry::hasSufficientMissEvidence(2, 2),
                       "two cameras may confirm a real miss");
     passed &= require(dart_geometry::hasSufficientMissEvidence(1, 2),
                       "one tip plus two persistent camera changes may confirm a real miss");
+    passed &= require(!dart_geometry::hasSufficientMissEvidence(0, 2),
+                      "two tipless persistent views must not report a miss");
+    passed &= require(dart_geometry::hasSufficientMissEvidence(0, 3),
+                      "three tipless persistent views may report a surround miss");
 
     return passed ? 0 : 1;
 }
